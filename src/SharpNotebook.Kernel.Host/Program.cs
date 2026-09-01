@@ -38,6 +38,16 @@ while (await Console.In.ReadLineAsync() is { } line)
             var packages = session.GetPackages().Select(kv => new PackageInfo(kv.Key, kv.Value)).ToList();
             Send(new PackagesResultEvent(pkgs.CellId, packages));
             break;
+        case DiagnosticsRequest diag:
+            var diagnostics = (await session.GetDiagnosticsAsync(diag.Code))
+                .Select(d => new DiagnosticInfo(d.Line, d.Column, d.Severity, d.Message))
+                .ToList();
+            Send(new DiagnosticsResultEvent(diag.CellId, diagnostics));
+            break;
+        case HoverRequest hover:
+            var hoverText = await session.GetHoverAsync(hover.Code, hover.Position);
+            Send(new HoverResultEvent(hover.CellId, hoverText));
+            break;
         case ShutdownRequest:
             return;
     }

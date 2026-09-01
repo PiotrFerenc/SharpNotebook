@@ -64,6 +64,81 @@ internal sealed class CompletionWorkspace
         }
     }
 
+    /// <summary>Errors/warnings for the in-progress (not-yet-run) cell — same throwaway-submission-project
+    /// trick as completion, so "before you hit Run" diagnostics see the same variables/usings a real run
+    /// would.</summary>
+    public async Task<IReadOnlyList<(int Line, int Column, string Severity, string Message)>> GetDiagnosticsAsync(string code)
+    {
+        var projectId = AddSubmissionProject(code);
+        try
+        {
+            var compilation = await _workspace.CurrentSolution.GetProject(projectId)!.GetCompilationAsync();
+            if (compilation is null)
+                return [];
+
+            return compilation.GetDiagnostics()
+                .Where(d => d.Severity != DiagnosticSeverity.Hidden)
+                .Select(d =>
+                {
+                    var pos = d.Location.GetLineSpan().StartLinePosition;
+                    return (pos.Line + 1, pos.Character + 1, d.Severity.ToString(), d.GetMessage());
+                })
+                .ToList();
+        }
+        finally
+        {
+            _workspace.TryApplyChanges(_workspace.CurrentSolution.RemoveProject(projectId));
+        }
+    }
+
+    /// <summary>Signature + XML-doc summary (if any) of the symbol at <paramref name="position"/>, for a
+    /// hover tooltip. Null if there's no symbol there (whitespace, punctuation, a keyword, ...).</summary>
+    public async Task<string?> GetHoverAsync(string code, int position)
+    {
+        var projectId = AddSubmissionProject(code);
+        try
+        {
+            var document = _workspace.CurrentSolution.GetProject(projectId)!.Documents.Single();
+            var semanticModel = await document.GetSemanticModelAsync();
+            var syntaxRoot = await document.GetSyntaxRootAsync();
+            if (semanticModel is null || syntaxRoot is null || position > syntaxRoot.FullSpan.End)
+                return null;
+
+            var token = syntaxRoot.FindToken(position);
+            var node = token.Parent;
+            if (node is null)
+                return null;
+
+            var symbol = semanticModel.GetSymbolInfo(node).Symbol ?? semanticModel.GetDeclaredSymbol(node);
+            if (symbol is null)
+                return null;
+
+            var signature = symbol.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat);
+            var summary = ExtractDocSummary(symbol.GetDocumentationCommentXml());
+            return summary is null ? signature : $"{signature}\n\n{summary}";
+        }
+        finally
+        {
+            _workspace.TryApplyChanges(_workspace.CurrentSolution.RemoveProject(projectId));
+        }
+    }
+
+    private static string? ExtractDocSummary(string? xmlDoc)
+    {
+        if (string.IsNullOrWhiteSpace(xmlDoc))
+            return null;
+
+        try
+        {
+            var summary = System.Xml.Linq.XDocument.Parse(xmlDoc).Root?.Element("summary")?.Value.Trim();
+            return string.IsNullOrWhiteSpace(summary) ? null : summary;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private ProjectId AddSubmissionProject(string code)
     {
         var projectId = ProjectId.CreateNewId();

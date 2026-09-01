@@ -70,6 +70,12 @@ public sealed class ScriptSession
     public Task<IReadOnlyList<string>> GetCompletionsAsync(string code, int position) =>
         _completions.GetCompletionsAsync(code, position);
 
+    public Task<IReadOnlyList<(int Line, int Column, string Severity, string Message)>> GetDiagnosticsAsync(string code) =>
+        _completions.GetDiagnosticsAsync(code);
+
+    public Task<string?> GetHoverAsync(string code, int position) =>
+        _completions.GetHoverAsync(code, position);
+
     // Roslyn's ScriptState.Variables accumulates one entry per declaration across the whole chained
     // submission history — a variable re-declared in a later cell (`var x = 1;` then `var x = 2;`) shows
     // up twice, in execution order. Keep only the last (current) value per name.

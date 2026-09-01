@@ -81,6 +81,10 @@ A resolved `(Id, Version)` is only recorded as "already requested" in `_requeste
 
 Restore errors (bad package id, network down, etc.) surface as a normal `OutputErrorEvent` in the cell, same as a compile error — but note `dotnet restore`'s actual NuGet diagnostics (e.g. `NU1101: Unable to find package`) go to **stdout**, not stderr; capture both or you'll get an empty error message on failure (happened once here too).
 
+### Diagnostics and hover — kernel side (`CompletionWorkspace.GetDiagnosticsAsync`/`GetHoverAsync`)
+
+Both reuse completion's own throwaway-submission-project trick (`AddSubmissionProject`, `finally`-removed) rather than introducing a second mechanism: diagnostics calls `Compilation.GetDiagnostics()` on the in-progress cell's project and maps each to `(Line, Column, Severity, Message)` (1-based, from `Diagnostic.Location.GetLineSpan()`); hover finds the token at a given offset, resolves it via `SemanticModel.GetSymbolInfo`/`GetDeclaredSymbol`, and returns `ToDisplayString(MinimallyQualifiedFormat)` plus the `<summary>` extracted from `ISymbol.GetDocumentationCommentXml()` if there is one. Desktop's `RefreshDiagnosticsAsync` only surfaces `Error`-severity results (not warnings) as a below-the-editor text summary, debounced 800ms after typing stops — this is deliberately not inline squiggle underlines, which would need a custom AvaloniaEdit render layer; a text summary is the bounded version of "see errors before you hit Run." Hover is wired through `TextEditor.PointerMoved` with a 500ms settle debounce and shown via `ToolTip.SetTip`/`ToolTip.SetIsOpen` on the editor itself, not a custom popup.
+
 ### Completion / IntelliSense — kernel side (`ScriptEnvironment`, `CompletionWorkspace`)
 
 `ScriptEnvironment.cs` is the single source of truth for the reference assemblies and default `using`s — both `ScriptSession` (execution) and `CompletionWorkspace` (completion) build from `ScriptEnvironment.MetadataReferences`/`Imports`, so IntelliSense sees exactly what the code will actually run against.

@@ -141,6 +141,48 @@ public sealed class NotebookSession : IAsyncDisposable
         }
     }
 
+    public async Task<IReadOnlyList<DiagnosticInfo>> GetDiagnosticsAsync(string cellId, string code)
+    {
+        await _ioLock.WaitAsync();
+        try
+        {
+            await SendAsync(new DiagnosticsRequest(cellId, code));
+
+            await foreach (var evt in ReadEventsAsync())
+            {
+                if (evt is DiagnosticsResultEvent result && result.CellId == cellId)
+                    return result.Items;
+            }
+
+            return [];
+        }
+        finally
+        {
+            _ioLock.Release();
+        }
+    }
+
+    public async Task<string?> GetHoverAsync(string cellId, string code, int position)
+    {
+        await _ioLock.WaitAsync();
+        try
+        {
+            await SendAsync(new HoverRequest(cellId, code, position));
+
+            await foreach (var evt in ReadEventsAsync())
+            {
+                if (evt is HoverResultEvent result && result.CellId == cellId)
+                    return result.Text;
+            }
+
+            return null;
+        }
+        finally
+        {
+            _ioLock.Release();
+        }
+    }
+
     /// <summary>
     /// Kills the kernel process and spawns a fresh one — the only way to stop a stuck cell (Roslyn
     /// Scripting has no mid-execution cancellation) and what "restart kernel" means: a clean process with

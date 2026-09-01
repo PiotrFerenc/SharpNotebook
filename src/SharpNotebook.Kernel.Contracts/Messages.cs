@@ -11,6 +11,8 @@ namespace SharpNotebook.Kernel.Contracts;
 [JsonDerivedType(typeof(CompletionRequest), "completion")]
 [JsonDerivedType(typeof(VariablesRequest), "variables")]
 [JsonDerivedType(typeof(PackagesRequest), "packages")]
+[JsonDerivedType(typeof(DiagnosticsRequest), "diagnostics")]
+[JsonDerivedType(typeof(HoverRequest), "hover")]
 [JsonDerivedType(typeof(ShutdownRequest), "shutdown")]
 public abstract record KernelRequest;
 
@@ -18,6 +20,8 @@ public sealed record ExecuteRequest(string CellId, string Code) : KernelRequest;
 public sealed record CompletionRequest(string CellId, string Code, int Position) : KernelRequest;
 public sealed record VariablesRequest(string CellId) : KernelRequest;
 public sealed record PackagesRequest(string CellId) : KernelRequest;
+public sealed record DiagnosticsRequest(string CellId, string Code) : KernelRequest;
+public sealed record HoverRequest(string CellId, string Code, int Position) : KernelRequest;
 public sealed record ShutdownRequest : KernelRequest;
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "kind")]
@@ -27,6 +31,8 @@ public sealed record ShutdownRequest : KernelRequest;
 [JsonDerivedType(typeof(CompletionResultEvent), "completionResult")]
 [JsonDerivedType(typeof(VariablesResultEvent), "variablesResult")]
 [JsonDerivedType(typeof(PackagesResultEvent), "packagesResult")]
+[JsonDerivedType(typeof(DiagnosticsResultEvent), "diagnosticsResult")]
+[JsonDerivedType(typeof(HoverResultEvent), "hoverResult")]
 public abstract record KernelEvent;
 
 public sealed record CompletionResultEvent(string CellId, List<string> Items) : KernelEvent;
@@ -34,6 +40,9 @@ public sealed record VariableInfo(string Name, string Type, string Value);
 public sealed record VariablesResultEvent(string CellId, List<VariableInfo> Items) : KernelEvent;
 public sealed record PackageInfo(string Id, string Version);
 public sealed record PackagesResultEvent(string CellId, List<PackageInfo> Items) : KernelEvent;
+public sealed record DiagnosticInfo(int Line, int Column, string Severity, string Message);
+public sealed record DiagnosticsResultEvent(string CellId, List<DiagnosticInfo> Items) : KernelEvent;
+public sealed record HoverResultEvent(string CellId, string? Text) : KernelEvent;
 
 /// <summary>One piece of cell output. MimeType is "text/plain", "text/html", or "image/png" (Data then base64).</summary>
 public sealed record OutputDisplayEvent(string CellId, string MimeType, string Data) : KernelEvent;

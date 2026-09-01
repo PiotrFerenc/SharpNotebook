@@ -1,8 +1,11 @@
 using System.Collections.ObjectModel;
 using System.Net;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Controls.Templates;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -130,11 +133,14 @@ public partial class MainWindow : Window
             new("Zamknij zakładkę", () => { if (CurrentTab is { } t) CloseTab(t); }),
             new("Eksportuj kod (.cs)", () => ExportCs_Click(null, new RoutedEventArgs())),
             new("Eksportuj wynik (.html)", () => ExportHtml_Click(null, new RoutedEventArgs())),
+            new("Eksportuj do .ipynb (Jupyter)", () => ExportIpynb_Click(null, new RoutedEventArgs())),
             new("Pokaż/schowaj Eksplorator (Ctrl+B)", () => ToggleLeftSidebar_Click(null, new RoutedEventArgs())),
             new("Pokaż/schowaj Ulubione (Ctrl+Alt+B)", () => ToggleRightSidebar_Click(null, new RoutedEventArgs())),
             new("Zwiń/rozwiń wszystkie komórki (Ctrl+Alt+C)", () => CollapseAllToggle_Click(null, new RoutedEventArgs())),
+            new("Szukaj w notebooku (Ctrl+F)", OpenSearch),
             new("Przełącz motyw Dark/Light", () => ThemeToggle_Click(null, new RoutedEventArgs())),
             new("Pokaż/schowaj panel Zmienne", () => _ = ToggleSidePanelAsync(SidePanelMode.Variables)),
+            new("Pokaż/schowaj Spis treści", () => _ = ToggleSidePanelAsync(SidePanelMode.Outline)),
             new("Pokaż/schowaj panel Paczki", () => _ = ToggleSidePanelAsync(SidePanelMode.Packages)),
         });
     }
@@ -184,6 +190,112 @@ public partial class MainWindow : Window
             e.Handled = true;
             if (CurrentTab is { } tabToRestart)
                 _ = RestartRunAllAsync(tabToRestart);
+        }
+        else if (ctrl && !shift && !alt && e.Key == Key.F)
+        {
+            e.Handled = true;
+            OpenSearch();
+        }
+        else if (e.Key == Key.Escape && SearchOverlay.IsVisible)
+        {
+            e.Handled = true;
+            CloseSearch();
+        }
+    }
+
+    // ---------- search across the whole notebook ----------
+
+    private readonly List<(int SlotIndex, int Offset, int Length)> _searchMatches = new();
+    private int _searchMatchIndex = -1;
+
+    private void OpenSearch()
+    {
+        SearchOverlay.IsVisible = true;
+        SearchInput.Text = "";
+        _searchMatches.Clear();
+        _searchMatchIndex = -1;
+        UpdateSearchCount();
+        SearchInput.Focus();
+    }
+
+    private void CloseSearch() => SearchOverlay.IsVisible = false;
+    private void CloseSearch_Click(object? sender, RoutedEventArgs e) => CloseSearch();
+
+    // Searches live editor text (not just the last-saved Cell.Source) across every cell in the current
+    // tab, in cell order — so it finds what's on screen, including unsaved edits.
+    private void RunSearch(string query)
+    {
+        _searchMatches.Clear();
+        _searchMatchIndex = -1;
+
+        var tab = CurrentTab;
+        if (tab is not null && !string.IsNullOrEmpty(query))
+        {
+            for (var i = 0; i < tab.Slots.Count; i++)
+            {
+                var text = tab.Slots[i].Editor.Text;
+                var start = 0;
+                while (true)
+                {
+                    var idx = text.IndexOf(query, start, StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0)
+                        break;
+                    _searchMatches.Add((i, idx, query.Length));
+                    start = idx + query.Length;
+                }
+            }
+        }
+
+        UpdateSearchCount();
+        if (_searchMatches.Count > 0)
+            GoToMatch(0);
+    }
+
+    private void UpdateSearchCount() =>
+        SearchCount.Text = _searchMatches.Count == 0 ? "0/0" : $"{_searchMatchIndex + 1}/{_searchMatches.Count}";
+
+    private void GoToMatch(int index)
+    {
+        if (_searchMatches.Count == 0)
+            return;
+
+        _searchMatchIndex = ((index % _searchMatches.Count) + _searchMatches.Count) % _searchMatches.Count;
+        UpdateSearchCount();
+
+        var tab = CurrentTab;
+        if (tab is null || _searchMatchIndex >= tab.Slots.Count)
+            return;
+
+        var (slotIndex, offset, length) = _searchMatches[_searchMatchIndex];
+        var slot = tab.Slots[slotIndex];
+        if (slot.SourceCollapsed)
+            SetSourceCollapsed(slot, false);
+
+        slot.Editor.Select(offset, length);
+        slot.Editor.ScrollToLine(slot.Editor.Document.GetLineByOffset(offset).LineNumber);
+        slot.Root.BringIntoView();
+    }
+
+    private void SearchInput_TextChanged(object? sender, TextChangedEventArgs e) => RunSearch(SearchInput.Text ?? "");
+    private void SearchNext_Click(object? sender, RoutedEventArgs e) => GoToMatch(_searchMatchIndex + 1);
+    private void SearchPrev_Click(object? sender, RoutedEventArgs e) => GoToMatch(_searchMatchIndex - 1);
+
+    private void SearchInput_KeyDown(object? sender, KeyEventArgs e)
+    {
+        switch (e.Key)
+        {
+            case Key.Escape:
+                e.Handled = true;
+                CloseSearch();
+                break;
+            case Key.Enter when e.KeyModifiers.HasFlag(KeyModifiers.Shift):
+                e.Handled = true;
+                GoToMatch(_searchMatchIndex - 1);
+                break;
+            case Key.Enter:
+                e.Handled = true;
+                GoToMatch(_searchMatchIndex + 1);
+                break;
         }
     }
 
@@ -429,6 +541,14 @@ public partial class MainWindow : Window
         }
     }
 
+    private static void SetTag(Cell cell, string tag, bool present)
+    {
+        if (present && !cell.Tags.Contains(tag))
+            cell.Tags.Add(tag);
+        else if (!present)
+            cell.Tags.Remove(tag);
+    }
+
     private static string SummarizeSource(string source)
     {
         var lines = source.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -449,7 +569,7 @@ public partial class MainWindow : Window
 
     // ---------- tabs ----------
 
-    private enum SidePanelMode { None, Variables, Packages }
+    private enum SidePanelMode { None, Variables, Packages, Outline }
 
     private NotebookTab? CurrentTab => (Tabs.SelectedItem as TabItem)?.Tag as NotebookTab;
 
@@ -654,6 +774,10 @@ public partial class MainWindow : Window
         ToolTip.SetTip(deleteButton, "Usuń komórkę");
         var favoriteButton = new Button { Content = "☆" };
         ToolTip.SetTip(favoriteButton, "Zapisz jako ulubione");
+        var hideInputToggle = new ToggleButton { Content = "👁", IsChecked = cell.Tags.Contains("hide-input") };
+        ToolTip.SetTip(hideInputToggle, "Ukryj kod przy otwarciu notebooka (tag: hide-input)");
+        var skipRunAllToggle = new ToggleButton { Content = "⏭", IsChecked = cell.Tags.Contains("skip-on-run-all") };
+        ToolTip.SetTip(skipRunAllToggle, "Pomiń przy Restart+Uruchom wszystko / Powyżej / Poniżej (tag: skip-on-run-all)");
         var runAboveButton = new Button { Content = "⏫", IsEnabled = tab.Notebook.Trusted };
         ToolTip.SetTip(runAboveButton, "Uruchom komórki powyżej");
         var runBelowButton = new Button { Content = "⏬", IsEnabled = tab.Notebook.Trusted };
@@ -698,6 +822,7 @@ public partial class MainWindow : Window
         };
 
         var errorText = new TextBlock { Foreground = _red, TextWrapping = TextWrapping.Wrap, IsVisible = false, Margin = new Thickness(0, 4, 0, 0) };
+        var diagnosticsText = new TextBlock { Foreground = _red, TextWrapping = TextWrapping.Wrap, IsVisible = false, FontSize = 11, Margin = new Thickness(0, 4, 0, 0) };
 
         var outputHeader = new StackPanel
         {
@@ -728,6 +853,22 @@ public partial class MainWindow : Window
 
         collapseButton.Click += (_, _) => SetSourceCollapsed(slot, !slot.SourceCollapsed);
         outputCollapseButton.Click += (_, _) => SetOutputCollapsed(slot, slot.OutputPanel.IsVisible);
+
+        // "hide-input" auto-collapses on render — reuses the same collapse machinery as the manual toggle,
+        // so it composes correctly with the "collapse all" button and stays consistent after re-render.
+        if (cell.Tags.Contains("hide-input"))
+            SetSourceCollapsed(slot, true);
+
+        hideInputToggle.IsCheckedChanged += (_, _) =>
+        {
+            SetTag(cell, "hide-input", hideInputToggle.IsChecked == true);
+            MarkDirty(tab);
+        };
+        skipRunAllToggle.IsCheckedChanged += (_, _) =>
+        {
+            SetTag(cell, "skip-on-run-all", skipRunAllToggle.IsChecked == true);
+            MarkDirty(tab);
+        };
 
         typeBox.SelectionChanged += (_, _) =>
         {
@@ -779,6 +920,44 @@ public partial class MainWindow : Window
 
         editor.TextChanged += (_, _) => MarkDirty(tab);
 
+        // Live diagnostics and hover docs only make sense for real C# — not for a Markdown/Ai cell's
+        // plain-text/prompt content. Neither is gated on Trusted: compiling code for diagnostics/symbol
+        // info never executes it, same reasoning as completion already not being gated (see CLAUDE.md).
+        if (cell.Type == CellType.Code)
+        {
+            DispatcherTimer? diagnosticsTimer = null;
+            editor.TextChanged += (_, _) =>
+            {
+                diagnosticsTimer?.Stop();
+                diagnosticsTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
+                diagnosticsTimer.Tick += async (_, _) =>
+                {
+                    diagnosticsTimer!.Stop();
+                    await RefreshDiagnosticsAsync(slot, diagnosticsText);
+                };
+                diagnosticsTimer.Start();
+            };
+
+            DispatcherTimer? hoverTimer = null;
+            editor.PointerMoved += (_, e) =>
+            {
+                var point = e.GetPosition(editor);
+                hoverTimer?.Stop();
+                hoverTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+                hoverTimer.Tick += async (_, _) =>
+                {
+                    hoverTimer!.Stop();
+                    await ShowHoverAsync(slot, editor, point);
+                };
+                hoverTimer.Start();
+            };
+            editor.PointerExited += (_, _) =>
+            {
+                hoverTimer?.Stop();
+                ToolTip.SetIsOpen(editor, false);
+            };
+        }
+
         // Reorder by drag: press the grip, move over another cell, release to drop there. No live
         // reordering while dragging (only on release) — swapping mid-drag would rebuild the visual tree
         // and drop the grip's own pointer capture, breaking the gesture partway through.
@@ -827,6 +1006,8 @@ public partial class MainWindow : Window
         header.Children.Add(downButton);
         header.Children.Add(deleteButton);
         header.Children.Add(favoriteButton);
+        header.Children.Add(hideInputToggle);
+        header.Children.Add(skipRunAllToggle);
         header.Children.Add(runAboveButton);
         header.Children.Add(runBelowButton);
         header.Children.Add(actionButton);
@@ -837,6 +1018,7 @@ public partial class MainWindow : Window
         body.Children.Add(header);
         body.Children.Add(editor);
         body.Children.Add(sourcePreview);
+        body.Children.Add(diagnosticsText);
         body.Children.Add(errorText);
         body.Children.Add(outputHeader);
         body.Children.Add(outputPanel);
@@ -851,6 +1033,41 @@ public partial class MainWindow : Window
         };
 
         return slot;
+    }
+
+    // ---------- diagnostics / hover ----------
+
+    // Only surfaces errors, not warnings — a lower-noise "will this even compile" signal before Run,
+    // not a full Problems panel. No inline squiggle underlines (would need a custom AvaloniaEdit
+    // render layer); a text summary below the editor is the bounded version of this feature.
+    private static async Task RefreshDiagnosticsAsync(CellSlot slot, TextBlock diagnosticsText)
+    {
+        var diagnostics = await slot.Tab.Session.GetDiagnosticsAsync(slot.Cell.Id.ToString(), slot.Editor.Text);
+        var errors = diagnostics.Where(d => d.Severity == "Error").ToList();
+
+        if (errors.Count == 0)
+        {
+            diagnosticsText.IsVisible = false;
+            return;
+        }
+
+        diagnosticsText.Text = string.Join("\n", errors.Take(5).Select(d => $"⚠ {d.Line}:{d.Column} {d.Message}"));
+        diagnosticsText.IsVisible = true;
+    }
+
+    private static async Task ShowHoverAsync(CellSlot slot, TextEditor editor, Point point)
+    {
+        var visualPosition = editor.GetPositionFromPoint(point);
+        if (visualPosition is null)
+            return;
+
+        var offset = editor.Document.GetOffset(visualPosition.Value.Line, visualPosition.Value.Column);
+        var text = await slot.Tab.Session.GetHoverAsync(slot.Cell.Id.ToString(), editor.Text, offset);
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        ToolTip.SetTip(editor, text);
+        ToolTip.SetIsOpen(editor, true);
     }
 
     // ---------- execution ----------
@@ -931,7 +1148,7 @@ public partial class MainWindow : Window
 
         foreach (var slot in tab.Slots.ToList())
         {
-            if (slot.Cell.Type == CellType.Code)
+            if (slot.Cell.Type == CellType.Code && !slot.Cell.Tags.Contains("skip-on-run-all"))
                 await RunCellAsync(slot);
         }
     }
@@ -970,7 +1187,7 @@ public partial class MainWindow : Window
         var hi = Math.Min(toIndex, tab.Slots.Count - 1);
         for (var i = lo; i <= hi; i++)
         {
-            if (tab.Slots[i].Cell.Type == CellType.Code)
+            if (tab.Slots[i].Cell.Type == CellType.Code && !tab.Slots[i].Cell.Tags.Contains("skip-on-run-all"))
                 await RunCellAsync(tab.Slots[i]);
         }
     }
@@ -1100,7 +1317,20 @@ public partial class MainWindow : Window
 
     private async void ToggleVariables_Click(object? sender, RoutedEventArgs e) => await ToggleSidePanelAsync(SidePanelMode.Variables);
     private async void TogglePackages_Click(object? sender, RoutedEventArgs e) => await ToggleSidePanelAsync(SidePanelMode.Packages);
+    private async void ToggleOutline_Click(object? sender, RoutedEventArgs e) => await ToggleSidePanelAsync(SidePanelMode.Outline);
     private async void RefreshSidePanel_Click(object? sender, RoutedEventArgs e) => await RefreshSidePanelAsync();
+
+    private void SidePanelList_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (_sidePanelMode != SidePanelMode.Outline || SidePanelList.SelectedItem is not OutlineEntry entry)
+            return;
+
+        var tab = CurrentTab;
+        if (tab is null || entry.SlotIndex >= tab.Slots.Count)
+            return;
+
+        tab.Slots[entry.SlotIndex].Root.BringIntoView();
+    }
 
     private void CloseSidePanel_Click(object? sender, RoutedEventArgs e)
     {
@@ -1119,7 +1349,13 @@ public partial class MainWindow : Window
 
         _sidePanelMode = mode;
         SidePanel.IsVisible = true;
-        SidePanelTitle.Text = mode == SidePanelMode.Variables ? "Zmienne" : "Paczki NuGet";
+        SidePanelTitle.Text = mode switch
+        {
+            SidePanelMode.Variables => "Zmienne",
+            SidePanelMode.Packages => "Paczki NuGet",
+            SidePanelMode.Outline => "Spis treści",
+            _ => "",
+        };
         await RefreshSidePanelAsync();
     }
 
@@ -1136,13 +1372,53 @@ public partial class MainWindow : Window
                 ? new[] { "(brak zmiennych)" }
                 : vars.Select(v => $"{v.Name} : {v.Type} = {Truncate(v.Value, 200)}").ToList();
         }
-        else
+        else if (_sidePanelMode == SidePanelMode.Packages)
         {
             var pkgs = await tab.Session.GetPackagesAsync();
             SidePanelList.ItemsSource = pkgs.Count == 0
                 ? new[] { "(brak zainstalowanych paczek)" }
                 : pkgs.Select(p => $"{p.Id} @ {p.Version}").ToList();
         }
+        else
+        {
+            var outline = BuildOutline(tab);
+            SidePanelList.ItemsSource = outline.Count == 0
+                ? new[] { "(brak nagłówków markdown)" }
+                : outline.Cast<object>().ToList();
+        }
+    }
+
+    // ---------- outline (markdown headers) ----------
+
+    private sealed record OutlineEntry(string Label, int SlotIndex)
+    {
+        public override string ToString() => Label;
+    }
+
+    private static List<OutlineEntry> BuildOutline(NotebookTab tab)
+    {
+        var entries = new List<OutlineEntry>();
+        for (var i = 0; i < tab.Slots.Count; i++)
+        {
+            var slot = tab.Slots[i];
+            if (slot.Cell.Type != CellType.Markdown)
+                continue;
+
+            foreach (var line in slot.Editor.Text.Split('\n'))
+            {
+                var trimmed = line.TrimStart();
+                var level = 0;
+                while (level < trimmed.Length && trimmed[level] == '#')
+                    level++;
+
+                if (level is > 0 and <= 6 && level < trimmed.Length && trimmed[level] == ' ')
+                {
+                    var title = trimmed[(level + 1)..].Trim();
+                    entries.Add(new OutlineEntry(new string(' ', (level - 1) * 2) + title, i));
+                }
+            }
+        }
+        return entries;
     }
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
@@ -1202,6 +1478,132 @@ public partial class MainWindow : Window
         await using var stream = await file.OpenWriteAsync();
         await using var writer = new StreamWriter(stream);
         await writer.WriteAsync(html);
+    }
+
+    private async void ExportIpynb_Click(object? sender, RoutedEventArgs e)
+    {
+        var tab = CurrentTab;
+        if (tab is null)
+            return;
+        SyncEditorsToCells(tab);
+
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Eksportuj do .ipynb",
+            SuggestedFileName = Path.GetFileNameWithoutExtension(tab.Path) + ".ipynb",
+            FileTypeChoices = [new FilePickerFileType("Jupyter Notebook") { Patterns = ["*.ipynb"] }],
+        });
+        if (file is null)
+            return;
+
+        var json = BuildIpynbJson(tab.Notebook);
+        await using var stream = await file.OpenWriteAsync();
+        await using var writer = new StreamWriter(stream);
+        await writer.WriteAsync(json);
+    }
+
+    // Real nbformat v4.5 — a notebook exported this way opens in actual Jupyter/JupyterLab/VS Code's
+    // notebook viewer/nbviewer/GitHub's own .ipynb preview, not just a lookalike. The "Ai" cell type has
+    // no nbformat equivalent — exported as a code cell (its prompt text as-is), same as after GenerateAsync
+    // converts it in-app.
+    private static string BuildIpynbJson(Notebook notebook)
+    {
+        var cells = new JsonArray();
+        foreach (var cell in notebook.Cells)
+        {
+            var isMarkdown = cell.Type == CellType.Markdown;
+            var cellObj = new JsonObject
+            {
+                ["cell_type"] = isMarkdown ? "markdown" : "code",
+                ["metadata"] = new JsonObject(),
+                ["source"] = ToIpynbLines(cell.Source),
+            };
+
+            if (!isMarkdown)
+            {
+                cellObj["execution_count"] = cell.ExecutionCount is { } n ? JsonValue.Create(n) : null;
+                var outputs = new JsonArray();
+                foreach (var output in cell.Outputs)
+                    outputs.Add(BuildIpynbOutput(output));
+                cellObj["outputs"] = outputs;
+            }
+
+            cells.Add(cellObj);
+        }
+
+        var root = new JsonObject
+        {
+            ["cells"] = cells,
+            ["metadata"] = new JsonObject
+            {
+                ["kernelspec"] = new JsonObject { ["display_name"] = "C# (SharpNotebook)", ["language"] = "csharp", ["name"] = "csharp" },
+                ["language_info"] = new JsonObject { ["name"] = "csharp" },
+            },
+            ["nbformat"] = 4,
+            ["nbformat_minor"] = 5,
+        };
+
+        return root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    // nbformat's "source"/"text" fields are an array of lines, each (except the last) keeping its
+    // trailing \n — not one big string with embedded newlines. A source that itself ends with \n must NOT
+    // produce a spurious empty trailing element (naive Split('\n') does exactly that) — the preceding
+    // element's own "\n" already accounts for it, matching Jupyter's own writer.
+    private static JsonArray ToIpynbLines(string text)
+    {
+        var normalized = text.Replace("\r\n", "\n");
+        var endsWithNewline = normalized.EndsWith('\n');
+        var trimmed = endsWithNewline ? normalized[..^1] : normalized;
+        var lines = trimmed.Split('\n');
+
+        var arr = new JsonArray();
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var isLastLine = i == lines.Length - 1;
+            arr.Add(isLastLine && !endsWithNewline ? lines[i] : lines[i] + "\n");
+        }
+        return arr;
+    }
+
+    private static JsonObject BuildIpynbOutput(CellOutput output)
+    {
+        if (output.MimeType == "text/plain" && output.Data.StartsWith("ERROR:"))
+        {
+            var message = output.Data["ERROR:".Length..].TrimStart();
+            return new JsonObject
+            {
+                ["output_type"] = "error",
+                ["ename"] = "Error",
+                ["evalue"] = message,
+                ["traceback"] = new JsonArray(message),
+            };
+        }
+
+        if (output.MimeType == "text/plain")
+        {
+            return new JsonObject
+            {
+                ["output_type"] = "stream",
+                ["name"] = "stdout",
+                ["text"] = ToIpynbLines(output.Data),
+            };
+        }
+
+        var data = new JsonObject();
+        if (output.MimeType == "image/png")
+            data["image/png"] = output.Data;
+        else if (output.MimeType == "text/html")
+            data["text/html"] = ToIpynbLines(output.Data);
+        else
+            data["text/plain"] = ToIpynbLines(output.Data);
+
+        return new JsonObject
+        {
+            ["output_type"] = "display_data",
+            ["data"] = data,
+            ["metadata"] = new JsonObject(),
+        };
     }
 
     private static string BuildHtmlExport(Notebook notebook, string title)
