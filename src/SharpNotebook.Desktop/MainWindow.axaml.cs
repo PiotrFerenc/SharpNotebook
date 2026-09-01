@@ -1075,40 +1075,54 @@ public partial class MainWindow : Window
     private async Task RunCellAsync(CellSlot slot)
     {
         var tab = slot.Tab;
-        if (!tab.Notebook.Trusted)
+        // The button click path is naturally re-entrancy-safe (IsEnabled=false blocks a second click),
+        // but the Shift+Enter/Ctrl+Enter keyboard path calls straight in — a key-repeat or a fast double
+        // press could otherwise start a second overlapping run on the same slot while the first's output
+        // callbacks (each a separately-queued Dispatcher.Post) are still in flight, racing both runs'
+        // Outputs.Clear()/OutputPanel.Children.Clear() against each other and desyncing the two
+        // collections — that desync is what crashed AppendOutput's Children[^1] indexer.
+        if (!tab.Notebook.Trusted || slot.Running)
             return;
 
-        slot.ActionButton.IsEnabled = false;
-        slot.Cell.Outputs.Clear();
-        slot.OutputPanel.Children.Clear();
-        slot.Cell.Source = slot.Editor.Text;
-        slot.StatusText.Text = "⏳ uruchamianie...";
-        slot.StatusText.Foreground = _overlay0;
+        slot.Running = true;
+        try
+        {
+            slot.ActionButton.IsEnabled = false;
+            slot.Cell.Outputs.Clear();
+            slot.OutputPanel.Children.Clear();
+            slot.Cell.Source = slot.Editor.Text;
+            slot.StatusText.Text = "⏳ uruchamianie...";
+            slot.StatusText.Foreground = _overlay0;
 
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        var result = await tab.Session.RunCellAsync(
-            slot.Cell.Id.ToString(),
-            slot.Cell.Source,
-            (mime, data) => Dispatcher.UIThread.Post(() => AppendOutput(slot, mime, data)),
-            error => Dispatcher.UIThread.Post(() => AppendOutput(slot, "text/plain", $"ERROR: {error}")));
-        stopwatch.Stop();
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var result = await tab.Session.RunCellAsync(
+                slot.Cell.Id.ToString(),
+                slot.Cell.Source,
+                (mime, data) => Dispatcher.UIThread.Post(() => AppendOutput(slot, mime, data)),
+                error => Dispatcher.UIThread.Post(() => AppendOutput(slot, "text/plain", $"ERROR: {error}")));
+            stopwatch.Stop();
 
-        slot.Cell.ExecutionCount = result.ExecutionCount;
-        slot.ExecBadge.Text = $"[{result.ExecutionCount}]";
-        slot.StatusText.Text = $"{(result.Success ? "✓" : "✗")} {FormatDuration(stopwatch.Elapsed)}";
-        slot.StatusText.Foreground = result.Success ? _green : _red;
-        slot.ActionButton.IsEnabled = true;
+            slot.Cell.ExecutionCount = result.ExecutionCount;
+            slot.ExecBadge.Text = $"[{result.ExecutionCount}]";
+            slot.StatusText.Text = $"{(result.Success ? "✓" : "✗")} {FormatDuration(stopwatch.Elapsed)}";
+            slot.StatusText.Foreground = result.Success ? _green : _red;
 
-        // Fresh output always starts expanded — a manual collapse from a previous run shouldn't hide the
-        // new result.
-        SetOutputCollapsed(slot, collapsed: false);
-        slot.OutputHeader.IsVisible = slot.Cell.Outputs.Count > 0;
-        slot.OutputHeaderLabel.Text = $"Wynik ({slot.Cell.Outputs.Count})";
+            // Fresh output always starts expanded — a manual collapse from a previous run shouldn't hide
+            // the new result.
+            SetOutputCollapsed(slot, collapsed: false);
+            slot.OutputHeader.IsVisible = slot.Cell.Outputs.Count > 0;
+            slot.OutputHeaderLabel.Text = $"Wynik ({slot.Cell.Outputs.Count})";
 
-        await SaveCurrentNotebookAsync(tab);
+            await SaveCurrentNotebookAsync(tab);
 
-        if (_sidePanelMode == SidePanelMode.Variables && CurrentTab == tab)
-            await RefreshSidePanelAsync();
+            if (_sidePanelMode == SidePanelMode.Variables && CurrentTab == tab)
+                await RefreshSidePanelAsync();
+        }
+        finally
+        {
+            slot.ActionButton.IsEnabled = true;
+            slot.Running = false;
+        }
     }
 
     private async Task GenerateAsync(CellSlot slot, TextBlock errorText)
@@ -1203,7 +1217,10 @@ public partial class MainWindow : Window
             && !data.StartsWith("ERROR:")
             && !last.Data.StartsWith("ERROR:");
 
-        if (canMerge)
+        // Defensive: Outputs and OutputPanel.Children are supposed to stay in lockstep, but if something
+        // ever desyncs them again, silently skipping the visual update beats an IndexOutOfRangeException
+        // taking the whole process down.
+        if (canMerge && slot.OutputPanel.Children.Count > 0)
         {
             var merged = last! with { Data = last.Data + data };
             slot.Cell.Outputs[^1] = merged;
@@ -1664,5 +1681,6 @@ public partial class MainWindow : Window
         public TextBlock SourcePreview { get; set; } = null!;
         public Button SourceCollapseButton { get; set; } = null!;
         public bool SourceCollapsed { get; set; }
+        public bool Running { get; set; }
     }
 }
