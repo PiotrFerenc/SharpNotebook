@@ -60,6 +60,7 @@ public partial class MainWindow : Window
     private SidePanelMode _sidePanelMode = SidePanelMode.None;
     private bool _leftCollapsed;
     private bool _rightCollapsed;
+    private readonly List<PaletteCommand> _allCommands = new();
 
     // Shared, mutable brush instances (see App.axaml) — cached once here so code-built controls can use
     // them directly; the light/dark toggle mutates these brushes' .Color in place, so every control that
@@ -83,6 +84,8 @@ public partial class MainWindow : Window
         FavoritesList.ItemsSource = _favorites;
         FavoritesList.ItemTemplate = new FuncDataTemplate<CellTemplate>((template, _) => BuildFavoriteRow(template));
 
+        InitializeCommandPalette();
+
         Closing += (_, _) =>
         {
             foreach (var tab in _tabs)
@@ -103,6 +106,144 @@ public partial class MainWindow : Window
         _red = (IBrush)res["CtpRedBrush"]!;
         _green = (IBrush)res["CtpGreenBrush"]!;
         _peach = (IBrush)res["CtpPeachBrush"]!;
+    }
+
+    // ---------- command palette ----------
+
+    private sealed record PaletteCommand(string Name, Action Execute)
+    {
+        public override string ToString() => Name;
+    }
+
+    // Reuses the same Click handlers the toolbar buttons call (invoked with a dummy RoutedEventArgs) for
+    // global actions; per-tab actions go through the named TrustTabAsync/AddCellToTab/SaveTabAsync/
+    // RestartRunAllAsync methods those buttons also call, guarded by "if there's a current tab".
+    private void InitializeCommandPalette()
+    {
+        _allCommands.AddRange(new PaletteCommand[]
+        {
+            new("Nowy notebook...", () => NewNotebookNameBox.Focus()),
+            new("Dodaj komórkę", () => { if (CurrentTab is { } t) AddCellToTab(t); }),
+            new("Zapisz notebook (Ctrl+S)", () => { if (CurrentTab is { } t) _ = SaveTabAsync(t); }),
+            new("Restart i uruchom wszystko (Ctrl+Shift+Enter)", () => { if (CurrentTab is { } t) _ = RestartRunAllAsync(t); }),
+            new("Ufaj temu notebookowi", () => { if (CurrentTab is { } t) _ = TrustTabAsync(t); }),
+            new("Zamknij zakładkę", () => { if (CurrentTab is { } t) CloseTab(t); }),
+            new("Eksportuj kod (.cs)", () => ExportCs_Click(null, new RoutedEventArgs())),
+            new("Eksportuj wynik (.html)", () => ExportHtml_Click(null, new RoutedEventArgs())),
+            new("Pokaż/schowaj Eksplorator (Ctrl+B)", () => ToggleLeftSidebar_Click(null, new RoutedEventArgs())),
+            new("Pokaż/schowaj Ulubione (Ctrl+Alt+B)", () => ToggleRightSidebar_Click(null, new RoutedEventArgs())),
+            new("Zwiń/rozwiń wszystkie komórki (Ctrl+Alt+C)", () => CollapseAllToggle_Click(null, new RoutedEventArgs())),
+            new("Przełącz motyw Dark/Light", () => ThemeToggle_Click(null, new RoutedEventArgs())),
+            new("Pokaż/schowaj panel Zmienne", () => _ = ToggleSidePanelAsync(SidePanelMode.Variables)),
+            new("Pokaż/schowaj panel Paczki", () => _ = ToggleSidePanelAsync(SidePanelMode.Packages)),
+        });
+    }
+
+    // Window-level shortcuts — bubble up from wherever focus is (including a cell's editor), so they work
+    // no matter what's focused. Everything here is also reachable via the command palette (Ctrl+Shift+P);
+    // these are just the handful worth a direct key for.
+    private void MainWindow_KeyDown(object? sender, KeyEventArgs e)
+    {
+        var ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        var shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
+        var alt = e.KeyModifiers.HasFlag(KeyModifiers.Alt);
+
+        if (ctrl && shift && !alt && e.Key == Key.P)
+        {
+            e.Handled = true;
+            OpenCommandPalette();
+        }
+        else if (e.Key == Key.Escape && CommandPaletteOverlay.IsVisible)
+        {
+            e.Handled = true;
+            CloseCommandPalette();
+        }
+        else if (ctrl && !shift && !alt && e.Key == Key.B)
+        {
+            e.Handled = true;
+            ToggleLeftSidebar_Click(null, new RoutedEventArgs());
+        }
+        else if (ctrl && alt && !shift && e.Key == Key.B)
+        {
+            e.Handled = true;
+            ToggleRightSidebar_Click(null, new RoutedEventArgs());
+        }
+        else if (ctrl && alt && !shift && e.Key == Key.C)
+        {
+            e.Handled = true;
+            CollapseAllToggle_Click(null, new RoutedEventArgs());
+        }
+        else if (ctrl && !shift && !alt && e.Key == Key.S)
+        {
+            e.Handled = true;
+            if (CurrentTab is { } tabToSave)
+                _ = SaveTabAsync(tabToSave);
+        }
+        else if (ctrl && shift && !alt && e.Key == Key.Enter)
+        {
+            e.Handled = true;
+            if (CurrentTab is { } tabToRestart)
+                _ = RestartRunAllAsync(tabToRestart);
+        }
+    }
+
+    private void OpenCommandPalette()
+    {
+        CommandPaletteOverlay.IsVisible = true;
+        CommandPaletteInput.Text = "";
+        FilterCommands("");
+        CommandPaletteInput.Focus();
+    }
+
+    private void CloseCommandPalette() => CommandPaletteOverlay.IsVisible = false;
+
+    private void FilterCommands(string query)
+    {
+        var filtered = string.IsNullOrWhiteSpace(query)
+            ? _allCommands
+            : _allCommands.Where(c => c.Name.Contains(query, StringComparison.OrdinalIgnoreCase)).ToList();
+
+        CommandPaletteList.ItemsSource = filtered;
+        if (filtered.Count > 0)
+            CommandPaletteList.SelectedIndex = 0;
+    }
+
+    private void CommandPaletteInput_TextChanged(object? sender, TextChangedEventArgs e) =>
+        FilterCommands(CommandPaletteInput.Text ?? "");
+
+    private void CommandPaletteInput_KeyDown(object? sender, KeyEventArgs e)
+    {
+        var items = CommandPaletteList.ItemsSource as IList<PaletteCommand>;
+        switch (e.Key)
+        {
+            case Key.Escape:
+                e.Handled = true;
+                CloseCommandPalette();
+                break;
+            case Key.Down when items is { Count: > 0 }:
+                e.Handled = true;
+                CommandPaletteList.SelectedIndex = Math.Min(CommandPaletteList.SelectedIndex + 1, items.Count - 1);
+                break;
+            case Key.Up when items is { Count: > 0 }:
+                e.Handled = true;
+                CommandPaletteList.SelectedIndex = Math.Max(CommandPaletteList.SelectedIndex - 1, 0);
+                break;
+            case Key.Enter:
+                e.Handled = true;
+                ExecuteSelectedCommand();
+                break;
+        }
+    }
+
+    private void CommandPaletteList_DoubleTapped(object? sender, TappedEventArgs e) => ExecuteSelectedCommand();
+
+    private void ExecuteSelectedCommand()
+    {
+        if (CommandPaletteList.SelectedItem is not PaletteCommand cmd)
+            return;
+
+        CloseCommandPalette();
+        cmd.Execute();
     }
 
     // ---------- file browser (nested folders) ----------
@@ -206,6 +347,7 @@ public partial class MainWindow : Window
         var insertButton = new Button { Content = "+", Padding = new Thickness(6, 0), FontSize = 12 };
         var deleteButton = new Button { Content = "✕", Padding = new Thickness(6, 0), FontSize = 12 };
         ToolTip.SetTip(insertButton, "Dodaj jako nową komórkę");
+        ToolTip.SetTip(deleteButton, "Usuń z ulubionych");
 
         insertButton.Click += (_, _) => InsertFavoriteIntoCurrentTab(template);
         // Deferred rather than synchronous: removing the bound item straight from its own container's
@@ -254,6 +396,47 @@ public partial class MainWindow : Window
         FavoritesStore.Save(_favoritesPath, _favorites);
     }
 
+    private static void SetSourceCollapsed(CellSlot slot, bool collapsed)
+    {
+        slot.SourceCollapsed = collapsed;
+        slot.Editor.IsVisible = !collapsed;
+        slot.SourcePreview.IsVisible = collapsed;
+        slot.SourcePreview.Text = collapsed ? SummarizeSource(slot.Editor.Text) : "";
+        slot.SourceCollapseButton.Content = collapsed ? "▸" : "▾";
+    }
+
+    private static void SetOutputCollapsed(CellSlot slot, bool collapsed)
+    {
+        slot.OutputPanel.IsVisible = !collapsed;
+        slot.OutputCollapseButton.Content = collapsed ? "▸" : "▾";
+    }
+
+    // Toggles based on the FIRST cell's current source-collapse state — if anything is expanded, "collapse
+    // all" wins; only when everything is already collapsed does the button switch to "expand all". Matches
+    // how most editors' fold-all buttons behave (fold wins over an inconsistent mixed state).
+    private void CollapseAllToggle_Click(object? sender, RoutedEventArgs e)
+    {
+        var tab = CurrentTab;
+        if (tab is null || tab.Slots.Count == 0)
+            return;
+
+        var collapseAll = tab.Slots.Any(s => !s.SourceCollapsed || (s.Cell.Outputs.Count > 0 && s.OutputPanel.IsVisible));
+        foreach (var slot in tab.Slots)
+        {
+            SetSourceCollapsed(slot, collapseAll);
+            if (slot.Cell.Outputs.Count > 0)
+                SetOutputCollapsed(slot, collapseAll);
+        }
+    }
+
+    private static string SummarizeSource(string source)
+    {
+        var lines = source.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var firstLine = lines.FirstOrDefault() ?? "";
+        var extra = lines.Length - 1;
+        return extra > 0 ? $"{firstLine}  (+{extra} linii)" : firstLine;
+    }
+
     private static string DeriveTemplateName(string source)
     {
         var firstLine = source
@@ -298,6 +481,7 @@ public partial class MainWindow : Window
         var nameText = new TextBlock { Text = Path.GetFileNameWithoutExtension(path), VerticalAlignment = VerticalAlignment.Center };
         var dirtyDot = new TextBlock { Text = " ●", Foreground = _peach, IsVisible = false, VerticalAlignment = VerticalAlignment.Center };
         var closeButton = new Button { Content = "✕", Padding = new Thickness(4, 0), FontSize = 11 };
+        ToolTip.SetTip(closeButton, "Zamknij zakładkę");
         closeButton.Click += (_, _) => CloseTab(tab);
 
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
@@ -306,30 +490,19 @@ public partial class MainWindow : Window
         header.Children.Add(closeButton);
         tab.DirtyDot = dirtyDot;
 
-        var trustButton = new Button { Content = "Ufaj temu notebookowi", IsVisible = !notebook.Trusted, Foreground = _red, BorderBrush = _red };
-        var addCellButton = new Button { Content = "+ Dodaj komórkę" };
-        var saveButton = new Button { Content = "Zapisz" };
-        var restartButton = new Button { Content = "⟳ Restart i uruchom wszystko" };
+        var trustButton = new Button { Content = "🔓", IsVisible = !notebook.Trusted, Foreground = _red, BorderBrush = _red };
+        ToolTip.SetTip(trustButton, "Ufaj temu notebookowi");
+        var addCellButton = new Button { Content = "＋" };
+        ToolTip.SetTip(addCellButton, "Dodaj komórkę");
+        var saveButton = new Button { Content = "💾" };
+        ToolTip.SetTip(saveButton, "Zapisz (Ctrl+S)");
+        var restartButton = new Button { Content = "⟳" };
+        ToolTip.SetTip(restartButton, "Restart i uruchom wszystko (Ctrl+Shift+Enter)");
 
-        trustButton.Click += async (_, _) =>
-        {
-            tab.Notebook.Trusted = true;
-            trustButton.IsVisible = false;
-            RenderCells(tab);
-            await SaveCurrentNotebookAsync(tab);
-        };
-        addCellButton.Click += (_, _) =>
-        {
-            SyncEditorsToCells(tab);
-            tab.Notebook.Cells.Add(new Cell());
-            RenderCells(tab);
-            MarkDirty(tab);
-        };
-        saveButton.Click += async (_, _) =>
-        {
-            SyncEditorsToCells(tab);
-            await SaveCurrentNotebookAsync(tab);
-        };
+        tab.TrustButton = trustButton;
+        trustButton.Click += async (_, _) => await TrustTabAsync(tab);
+        addCellButton.Click += (_, _) => AddCellToTab(tab);
+        saveButton.Click += async (_, _) => await SaveTabAsync(tab);
         restartButton.Click += async (_, _) => await RestartRunAllAsync(tab);
 
         var actionBar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(12, 8) };
@@ -462,6 +635,7 @@ public partial class MainWindow : Window
             Margin = new Thickness(0, 0, 4, 0),
             Cursor = new Cursor(StandardCursorType.SizeAll),
         };
+        ToolTip.SetTip(grip, "Przeciągnij, aby zmienić kolejność");
 
         var typeBox = new ComboBox
         {
@@ -470,17 +644,27 @@ public partial class MainWindow : Window
             Width = 110,
         };
 
+        var collapseButton = new Button { Content = "▾" };
+        ToolTip.SetTip(collapseButton, "Zwiń/rozwiń komórkę");
         var upButton = new Button { Content = "↑" };
+        ToolTip.SetTip(upButton, "Przesuń w górę");
         var downButton = new Button { Content = "↓" };
-        var deleteButton = new Button { Content = "Usuń" };
+        ToolTip.SetTip(downButton, "Przesuń w dół");
+        var deleteButton = new Button { Content = "🗑" };
+        ToolTip.SetTip(deleteButton, "Usuń komórkę");
         var favoriteButton = new Button { Content = "☆" };
         ToolTip.SetTip(favoriteButton, "Zapisz jako ulubione");
+        var runAboveButton = new Button { Content = "⏫", IsEnabled = tab.Notebook.Trusted };
+        ToolTip.SetTip(runAboveButton, "Uruchom komórki powyżej");
+        var runBelowButton = new Button { Content = "⏬", IsEnabled = tab.Notebook.Trusted };
+        ToolTip.SetTip(runBelowButton, "Uruchom tę i komórki poniżej");
         var actionButton = new Button
         {
-            Content = cell.Type == CellType.Ai ? "✨ Generuj kod" : "▶ Uruchom",
+            Content = cell.Type == CellType.Ai ? "✨" : "▶",
             IsVisible = cell.Type != CellType.Markdown,
             IsEnabled = tab.Notebook.Trusted,
         };
+        ToolTip.SetTip(actionButton, cell.Type == CellType.Ai ? "Generuj kod (Ctrl+Enter)" : "Uruchom (Ctrl+Enter)");
         var execBadge = new TextBlock
         {
             VerticalAlignment = VerticalAlignment.Center,
@@ -504,14 +688,46 @@ public partial class MainWindow : Window
         editor.TextArea.SelectionBrush = _mauveDim;
         editor.TextArea.Caret.CaretBrush = _mauve;
 
+        var sourcePreview = new TextBlock
+        {
+            Foreground = _overlay0,
+            FontFamily = MonoFont,
+            FontSize = 12,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            IsVisible = false,
+        };
+
         var errorText = new TextBlock { Foreground = _red, TextWrapping = TextWrapping.Wrap, IsVisible = false, Margin = new Thickness(0, 4, 0, 0) };
 
-        var outputPanel = new StackPanel { Spacing = 4, Margin = new Thickness(0, 6, 0, 0) };
+        var outputHeader = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            Margin = new Thickness(0, 6, 0, 0),
+            IsVisible = cell.Outputs.Count > 0,
+        };
+        var outputCollapseButton = new Button { Content = "▾", Padding = new Thickness(6, 2), FontSize = 10 };
+        ToolTip.SetTip(outputCollapseButton, "Zwiń/rozwiń wynik");
+        var outputHeaderLabel = new TextBlock { Text = $"Wynik ({cell.Outputs.Count})", Foreground = _overlay0, FontSize = 10, VerticalAlignment = VerticalAlignment.Center };
+        outputHeader.Children.Add(outputCollapseButton);
+        outputHeader.Children.Add(outputHeaderLabel);
+
+        var outputPanel = new StackPanel { Spacing = 4, Margin = new Thickness(0, 2, 0, 0) };
         foreach (var output in cell.Outputs)
             outputPanel.Children.Add(RenderOutput(output));
 
-        var slot = new CellSlot(tab, cell, editor, execBadge, statusText, outputPanel, actionButton);
+        var slot = new CellSlot(tab, cell, editor, execBadge, statusText, outputPanel, actionButton)
+        {
+            OutputHeader = outputHeader,
+            OutputHeaderLabel = outputHeaderLabel,
+            OutputCollapseButton = outputCollapseButton,
+            SourcePreview = sourcePreview,
+            SourceCollapseButton = collapseButton,
+        };
         InstallHighlighting(slot, cell.Type);
+
+        collapseButton.Click += (_, _) => SetSourceCollapsed(slot, !slot.SourceCollapsed);
+        outputCollapseButton.Click += (_, _) => SetOutputCollapsed(slot, slot.OutputPanel.IsVisible);
 
         typeBox.SelectionChanged += (_, _) =>
         {
@@ -524,6 +740,8 @@ public partial class MainWindow : Window
         downButton.Click += (_, _) => MoveCell(tab, cell, 1);
         deleteButton.Click += (_, _) => DeleteCell(tab, cell);
         favoriteButton.Click += (_, _) => SaveAsFavorite(cell, slot.Editor.Text);
+        runAboveButton.Click += async (_, _) => await RunRangeAsync(tab, 0, tab.Notebook.Cells.IndexOf(cell) - 1);
+        runBelowButton.Click += async (_, _) => await RunRangeAsync(tab, tab.Notebook.Cells.IndexOf(cell), tab.Notebook.Cells.Count - 1);
         actionButton.Click += async (_, _) =>
         {
             if (cell.Type == CellType.Ai)
@@ -603,11 +821,14 @@ public partial class MainWindow : Window
 
         var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
         header.Children.Add(grip);
+        header.Children.Add(collapseButton);
         header.Children.Add(typeBox);
         header.Children.Add(upButton);
         header.Children.Add(downButton);
         header.Children.Add(deleteButton);
         header.Children.Add(favoriteButton);
+        header.Children.Add(runAboveButton);
+        header.Children.Add(runBelowButton);
         header.Children.Add(actionButton);
         header.Children.Add(execBadge);
         header.Children.Add(statusText);
@@ -615,7 +836,9 @@ public partial class MainWindow : Window
         var body = new StackPanel { Spacing = 4 };
         body.Children.Add(header);
         body.Children.Add(editor);
+        body.Children.Add(sourcePreview);
         body.Children.Add(errorText);
+        body.Children.Add(outputHeader);
         body.Children.Add(outputPanel);
 
         slot.Root = new Border
@@ -658,6 +881,13 @@ public partial class MainWindow : Window
         slot.StatusText.Text = $"{(result.Success ? "✓" : "✗")} {FormatDuration(stopwatch.Elapsed)}";
         slot.StatusText.Foreground = result.Success ? _green : _red;
         slot.ActionButton.IsEnabled = true;
+
+        // Fresh output always starts expanded — a manual collapse from a previous run shouldn't hide the
+        // new result.
+        SetOutputCollapsed(slot, collapsed: false);
+        slot.OutputHeader.IsVisible = slot.Cell.Outputs.Count > 0;
+        slot.OutputHeaderLabel.Text = $"Wynik ({slot.Cell.Outputs.Count})";
+
         await SaveCurrentNotebookAsync(tab);
 
         if (_sidePanelMode == SidePanelMode.Variables && CurrentTab == tab)
@@ -703,6 +933,45 @@ public partial class MainWindow : Window
         {
             if (slot.Cell.Type == CellType.Code)
                 await RunCellAsync(slot);
+        }
+    }
+
+    private async Task TrustTabAsync(NotebookTab tab)
+    {
+        if (tab.Notebook.Trusted)
+            return;
+
+        tab.Notebook.Trusted = true;
+        tab.TrustButton.IsVisible = false;
+        RenderCells(tab);
+        await SaveCurrentNotebookAsync(tab);
+    }
+
+    private void AddCellToTab(NotebookTab tab)
+    {
+        SyncEditorsToCells(tab);
+        tab.Notebook.Cells.Add(new Cell());
+        RenderCells(tab);
+        MarkDirty(tab);
+    }
+
+    private async Task SaveTabAsync(NotebookTab tab)
+    {
+        SyncEditorsToCells(tab);
+        await SaveCurrentNotebookAsync(tab);
+    }
+
+    // "Run Above"/"Run Below" — unlike RestartRunAllAsync, no kernel restart: they build on whatever
+    // state the kernel already has, same as running each of those cells by hand in order would.
+    private async Task RunRangeAsync(NotebookTab tab, int fromIndex, int toIndex)
+    {
+        SyncEditorsToCells(tab);
+        var lo = Math.Max(0, fromIndex);
+        var hi = Math.Min(toIndex, tab.Slots.Count - 1);
+        for (var i = lo; i <= hi; i++)
+        {
+            if (tab.Slots[i].Cell.Type == CellType.Code)
+                await RunCellAsync(tab.Slots[i]);
         }
     }
 
@@ -816,7 +1085,7 @@ public partial class MainWindow : Window
     private void ThemeToggle_Click(object? sender, RoutedEventArgs e)
     {
         _isDark = !_isDark;
-        ThemeToggleButton.Content = _isDark ? "🌙 Dark" : "☀️ Light";
+        ThemeToggleButton.Content = _isDark ? "🌙" : "☀️";
         Application.Current!.RequestedThemeVariant = _isDark ? ThemeVariant.Dark : ThemeVariant.Light;
 
         foreach (var (key, mocha, latte) in PaletteMap)
@@ -973,6 +1242,7 @@ public partial class MainWindow : Window
         public bool Dirty;
         public TextBlock DirtyDot = null!;
         public TabItem TabItem = null!;
+        public Button TrustButton = null!;
     }
 
     private sealed class CellSlot(NotebookTab tab, Cell cell, TextEditor editor, TextBlock execBadge, TextBlock statusText, StackPanel outputPanel, Button actionButton)
@@ -986,5 +1256,11 @@ public partial class MainWindow : Window
         public Button ActionButton { get; } = actionButton;
         public Control Root { get; set; } = null!;
         public TextMate.Installation? Installation { get; set; }
+        public StackPanel OutputHeader { get; set; } = null!;
+        public TextBlock OutputHeaderLabel { get; set; } = null!;
+        public Button OutputCollapseButton { get; set; } = null!;
+        public TextBlock SourcePreview { get; set; } = null!;
+        public Button SourceCollapseButton { get; set; } = null!;
+        public bool SourceCollapsed { get; set; }
     }
 }

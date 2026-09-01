@@ -3,7 +3,8 @@
         x:Class="SharpNotebook.Desktop.MainWindow"
         Title="SharpNotebook"
         Width="1300" Height="850"
-        Background="{StaticResource CtpBaseBrush}">
+        Background="{StaticResource CtpBaseBrush}"
+        KeyDown="MainWindow_KeyDown">
     <Grid x:Name="RootGrid" ColumnDefinitions="240,*,240">
         <Border x:Name="LeftSidebar" Grid.Column="0" Background="{StaticResource CtpMantleBrush}"
                 BorderBrush="{StaticResource CtpSurface0Brush}" BorderThickness="0,0,1,0">
@@ -12,7 +13,7 @@
                            Foreground="{StaticResource CtpOverlay0Brush}" Margin="4,0,0,10" />
                 <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0" Spacing="4">
                     <TextBox x:Name="NewNotebookNameBox" PlaceholderText="nazwa notebooka" />
-                    <Button Content="+ Nowy notebook" Click="NewNotebook_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                    <Button Content="＋" Click="NewNotebook_Click" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" ToolTip.Tip="Nowy notebook" />
                 </StackPanel>
                 <ListBox x:Name="FilesList" SelectionChanged="FilesList_SelectionChanged" />
             </DockPanel>
@@ -22,13 +23,14 @@
             <Border DockPanel.Dock="Top" Background="{StaticResource CtpMantleBrush}"
                     BorderBrush="{StaticResource CtpSurface0Brush}" BorderThickness="0,0,0,1">
                 <StackPanel Orientation="Horizontal" Spacing="6" Margin="12,8">
-                    <Button Content="◧ Pliki" Click="ToggleLeftSidebar_Click" ToolTip.Tip="Pokaż/schowaj eksplorator plików" />
-                    <Button Content="◨ Ulubione" Click="ToggleRightSidebar_Click" ToolTip.Tip="Pokaż/schowaj ulubione" />
-                    <Button x:Name="ThemeToggleButton" Content="🌙 Dark" Click="ThemeToggle_Click" ToolTip.Tip="Przełącz Catppuccin Mocha/Latte" />
-                    <Button Content="Ω Zmienne" Click="ToggleVariables_Click" />
-                    <Button Content="📦 Paczki" Click="TogglePackages_Click" />
-                    <Button Content="⇓ .cs" Click="ExportCs_Click" ToolTip.Tip="Eksportuj komórki kodu do pliku .cs" />
-                    <Button Content="⇓ .html" Click="ExportHtml_Click" ToolTip.Tip="Eksportuj notebook jako transkrypt .html" />
+                    <Button Content="◧" Click="ToggleLeftSidebar_Click" ToolTip.Tip="Eksplorator (Ctrl+B)" />
+                    <Button Content="◨" Click="ToggleRightSidebar_Click" ToolTip.Tip="Ulubione (Ctrl+Alt+B)" />
+                    <Button Content="⊟" Click="CollapseAllToggle_Click" ToolTip.Tip="Zwiń/rozwiń wszystkie komórki i outputy (Ctrl+Alt+C)" />
+                    <Button x:Name="ThemeToggleButton" Content="🌙" Click="ThemeToggle_Click" ToolTip.Tip="Motyw Dark/Light" />
+                    <Button Content="Ω" Click="ToggleVariables_Click" ToolTip.Tip="Zmienne" />
+                    <Button Content="📦" Click="TogglePackages_Click" ToolTip.Tip="Paczki NuGet" />
+                    <Button Content="🧾" Click="ExportCs_Click" ToolTip.Tip="Eksportuj kod (.cs)" />
+                    <Button Content="🌐" Click="ExportHtml_Click" ToolTip.Tip="Eksportuj wynik (.html)" />
                 </StackPanel>
             </Border>
 
@@ -39,8 +41,8 @@
                 <DockPanel Margin="10">
                     <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Spacing="8" Margin="0,0,0,6">
                         <TextBlock x:Name="SidePanelTitle" FontWeight="Bold" Foreground="{StaticResource CtpMauveBrush}" />
-                        <Button Content="🔄" Click="RefreshSidePanel_Click" Padding="6,2" />
-                        <Button Content="✕" Click="CloseSidePanel_Click" Padding="6,2" />
+                        <Button Content="🔄" Click="RefreshSidePanel_Click" Padding="6,2" ToolTip.Tip="Odśwież" />
+                        <Button Content="✕" Click="CloseSidePanel_Click" Padding="6,2" ToolTip.Tip="Zamknij" />
                     </StackPanel>
                     <ListBox x:Name="SidePanelList" FontFamily="avares://SharpNotebook.Desktop/Assets/Fonts#JetBrains Mono,Consolas,monospace" FontSize="12" />
                 </DockPanel>
@@ -58,6 +60,18 @@
                            Foreground="{StaticResource CtpOverlay0Brush}" TextWrapping="Wrap" Margin="4,10,4,0" />
                 <ListBox x:Name="FavoritesList" />
             </DockPanel>
+        </Border>
+
+        <Border x:Name="CommandPaletteOverlay" Grid.Column="0" Grid.ColumnSpan="3" IsVisible="False"
+                Background="#AA000000">
+            <Border Width="520" MaxHeight="420" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,90,0,0"
+                    Background="{StaticResource CtpMantleBrush}" BorderBrush="{StaticResource CtpMauveBrush}" BorderThickness="1">
+                <DockPanel Margin="10">
+                    <TextBox x:Name="CommandPaletteInput" DockPanel.Dock="Top" PlaceholderText="Wpisz komendę..."
+                             TextChanged="CommandPaletteInput_TextChanged" KeyDown="CommandPaletteInput_KeyDown" />
+                    <ListBox x:Name="CommandPaletteList" Margin="0,8,0,0" MaxHeight="320" DoubleTapped="CommandPaletteList_DoubleTapped" />
+                </DockPanel>
+            </Border>
         </Border>
     </Grid>
 </Window>
