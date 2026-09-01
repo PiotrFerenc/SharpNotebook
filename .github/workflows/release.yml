@@ -1,0 +1,29 @@
+name: Release
+
+# Packages the source tree as-is (git archive over the tagged commit — respects .gitignore since
+# bin/obj were never tracked) and attaches it to a GitHub Release. No dotnet restore/build/publish step
+# on purpose: this is a source snapshot, not a binary distribution.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package source archive
+        run: git archive --format=zip --output="SharpNotebook-${GITHUB_REF_NAME}.zip" HEAD
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "SharpNotebook-${GITHUB_REF_NAME}.zip" \
+            --title "SharpNotebook $GITHUB_REF_NAME" \
+            --generate-notes
