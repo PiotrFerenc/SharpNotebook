@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <ResourcePreloader />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@@400;700&display=swap" />
+    <link rel="stylesheet" href="_content/BlazorMonaco/lib/monaco-editor/min/vs/editor/editor.main.css" />
+    <link rel="stylesheet" href="theme.css" />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["SharpNotebook.Web.styles.css"]" />
+    <ImportMap />
+    <HeadOutlet @rendermode="InteractiveServer" />
+</head>
+
+<body>
+    <!--
+    THESIS: SharpNotebook is a calm, dependable dev-tool surface — no theme
+    cosplay, no chrome that fights the code. Refuses the "look how retro/edgy
+    I am" costume the pixel-art build before it wore.
+    OWN-WORLD: Catppuccin Mocha — soft near-black base, one lavender/mauve
+    signal color for identity and focus, warm accent set (peach/red/green)
+    reserved for state, not decoration. Rounded 8-10px corners, quiet 1px
+    borders, soft low-glare shadows — the opposite material of hard pixel
+    bevels. Real Monaco editors in every cell, not styled textareas.
+    STORY: open a file, trust it if foreign, run cells in a real code editor
+    with real completions, read output in a quiet mono readout.
+    FIRST VIEWPORT: rounded-panel file browser left; notebook title and
+    kernel-lifecycle controls top; cell stack center, each cell its own
+    soft-bordered panel holding a Monaco editor.
+    FORM: user-pinned direction ("Catppuccin Mocha") — brief overrides the
+    roll; supersedes the prior pixel-art world, which is now anti-reference.
+    FINISH: unreviewed and undocumented is unfinished; this build ends with
+    the finish review, the verdict, and DESIGN.md.
+    -->
+    <Routes @rendermode="InteractiveServer" />
+    <ReconnectModal />
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+    <script src="_content/BlazorMonaco/jsInterop.js"></script>
+    <script src="_content/BlazorMonaco/lib/monaco-editor/min/vs/loader.js"></script>
+    <script src="_content/BlazorMonaco/lib/monaco-editor/min/vs/editor/editor.main.js"></script>
+    <script src="monaco-ready.js"></script>
+    <script src="download.js"></script>
+</body>
+
+</html>

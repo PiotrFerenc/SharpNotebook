@@ -1,0 +1,120 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="SharpNotebook.Desktop.App"
+             RequestedThemeVariant="Dark">
+
+    <Application.Resources>
+        <!-- Catppuccin — same palette as the Web frontend's theme.css. These are mutable brush INSTANCES
+             (not swapped, their .Color is edited in place by the light/dark toggle) so every control that
+             picked one up via StaticResource repaints live without rebuilding the visual tree. -->
+        <SolidColorBrush x:Key="CtpBaseBrush" Color="#1e1e2e" />
+        <SolidColorBrush x:Key="CtpMantleBrush" Color="#181825" />
+        <SolidColorBrush x:Key="CtpCrustBrush" Color="#11111b" />
+        <SolidColorBrush x:Key="CtpSurface0Brush" Color="#313244" />
+        <SolidColorBrush x:Key="CtpSurface1Brush" Color="#45475a" />
+        <SolidColorBrush x:Key="CtpSurface2Brush" Color="#585b70" />
+        <SolidColorBrush x:Key="CtpTextBrush" Color="#cdd6f4" />
+        <SolidColorBrush x:Key="CtpSubtext1Brush" Color="#bac2de" />
+        <SolidColorBrush x:Key="CtpOverlay0Brush" Color="#6c7086" />
+        <SolidColorBrush x:Key="CtpMauveBrush" Color="#cba6f7" />
+        <SolidColorBrush x:Key="CtpMauveDimBrush" Color="#cba6f7" Opacity="0.35" />
+        <SolidColorBrush x:Key="CtpRedBrush" Color="#f38ba8" />
+        <SolidColorBrush x:Key="CtpGreenBrush" Color="#a6e3a1" />
+        <SolidColorBrush x:Key="CtpPeachBrush" Color="#fab387" />
+    </Application.Resources>
+
+    <Application.Styles>
+        <FluentTheme />
+        <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
+
+        <!-- VS Code-flavored chrome: flat, sharp-cornered, Catppuccin-colored controls. -->
+        <Style Selector="Window">
+            <Setter Property="Background" Value="{StaticResource CtpBaseBrush}" />
+            <Setter Property="FontFamily" Value="avares://SharpNotebook.Desktop/Assets/Fonts#JetBrains Mono,Consolas,monospace" />
+        </Style>
+
+        <Style Selector="Button">
+            <Setter Property="Background" Value="{StaticResource CtpSurface0Brush}" />
+            <Setter Property="Foreground" Value="{StaticResource CtpTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource CtpSurface1Brush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="0" />
+            <Setter Property="Padding" Value="10,5" />
+        </Style>
+        <Style Selector="Button:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource CtpSurface1Brush}" />
+        </Style>
+        <Style Selector="Button:disabled /template/ ContentPresenter">
+            <Setter Property="Opacity" Value="0.45" />
+        </Style>
+
+        <Style Selector="TextBox">
+            <Setter Property="Background" Value="{StaticResource CtpCrustBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource CtpGreenBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource CtpSurface1Brush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="0" />
+            <Setter Property="CaretBrush" Value="{StaticResource CtpMauveBrush}" />
+            <Setter Property="SelectionBrush" Value="{StaticResource CtpMauveDimBrush}" />
+        </Style>
+
+        <Style Selector="ComboBox">
+            <Setter Property="Background" Value="{StaticResource CtpSurface0Brush}" />
+            <Setter Property="Foreground" Value="{StaticResource CtpTextBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource CtpSurface1Brush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="0" />
+        </Style>
+        <Style Selector="ComboBoxItem">
+            <Setter Property="Foreground" Value="{StaticResource CtpTextBrush}" />
+            <Setter Property="CornerRadius" Value="0" />
+        </Style>
+        <Style Selector="ComboBoxItem:selected /template/ ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource CtpSurface1Brush}" />
+        </Style>
+
+        <Style Selector="ListBox">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+        <Style Selector="ListBoxItem">
+            <Setter Property="Foreground" Value="{StaticResource CtpSubtext1Brush}" />
+            <Setter Property="CornerRadius" Value="0" />
+            <Setter Property="Padding" Value="8,5" />
+        </Style>
+        <Style Selector="ListBoxItem:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource CtpSurface0Brush}" />
+        </Style>
+        <Style Selector="ListBoxItem:selected /template/ ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource CtpSurface0Brush}" />
+        </Style>
+        <Style Selector="ListBoxItem:selected TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource CtpMauveBrush}" />
+        </Style>
+
+        <Style Selector="TabControl">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Padding" Value="0" />
+        </Style>
+        <Style Selector="TabItem">
+            <Setter Property="Background" Value="{StaticResource CtpMantleBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource CtpSubtext1Brush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource CtpSurface0Brush}" />
+            <Setter Property="BorderThickness" Value="0,0,1,0" />
+            <Setter Property="CornerRadius" Value="0" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+        <Style Selector="TabItem:selected">
+            <Setter Property="Background" Value="{StaticResource CtpBaseBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource CtpMauveBrush}" />
+        </Style>
+
+        <Style Selector="ScrollViewer">
+            <Setter Property="Background" Value="Transparent" />
+        </Style>
+
+        <Style Selector="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource CtpTextBrush}" />
+        </Style>
+    </Application.Styles>
+</Application>

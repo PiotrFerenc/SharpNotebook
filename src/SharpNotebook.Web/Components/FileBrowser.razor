@@ -1,0 +1,148 @@
+@using SharpNotebook.Core
+
+<div class="ui-panel file-browser" style="width:260px;flex-shrink:0;padding:0.75rem;overflow-y:auto;">
+    <div class="ui-title" style="font-size:0.9rem;margin-bottom:0.5rem;">Pliki</div>
+
+    <button class="ui-btn" style="width:100%;margin-bottom:0.5rem;" @onclick="NavigateUp" disabled="@(_currentDir == _rootDir)">
+        <Icon Name="chevron-up" Size="14" /> W górę
+    </button>
+    <div style="font-size:0.65rem;color:var(--subtext0);word-break:break-all;margin-bottom:0.5rem;">@_currentDir</div>
+
+    <ul style="list-style:none;padding:0;margin:0;">
+        @foreach (var dir in _dirs)
+        {
+            <li class="ui-list-item">
+                <button class="ui-link" @onclick="() => NavigateInto(dir)">
+                    <Icon Name="folder" Size="15" Color="var(--peach)" /> @System.IO.Path.GetFileName(dir)
+                </button>
+            </li>
+        }
+        @foreach (var file in _files)
+        {
+            <li class="ui-list-item">
+                @if (_renamingPath == file)
+                {
+                    <input class="ui-input" @bind="_renameName" @bind:event="oninput" style="width:7rem;" />
+                    <button class="ui-btn" style="font-size:0.7rem;padding:0.3em 0.5em;" @onclick="ConfirmRenameAsync">OK</button>
+                    <button class="ui-btn" style="font-size:0.7rem;padding:0.3em 0.5em;" @onclick="@(() => _renamingPath = null)">X</button>
+                }
+                else
+                {
+                    <button class="ui-link @(file == CurrentOpenPath ? "ui-link--active" : "")" @onclick="() => OpenAsync(file)">
+                        @System.IO.Path.GetFileNameWithoutExtension(file)
+                    </button>
+                    <button class="ui-link" title="Zmień nazwę" @onclick="() => StartRename(file)">
+                        <Icon Name="pencil" Size="14" />
+                    </button>
+                    @if (_confirmingDeletePath == file)
+                    {
+                        <button class="ui-btn ui-btn--danger" style="font-size:0.7rem;padding:0.3em 0.5em;" @onclick="() => DeleteAsync(file)">Usuń?</button>
+                        <button class="ui-btn" style="font-size:0.7rem;padding:0.3em 0.5em;" @onclick="@(() => _confirmingDeletePath = null)">X</button>
+                    }
+                    else
+                    {
+                        <button class="ui-link" title="Usuń" @onclick="@(() => _confirmingDeletePath = file)">
+                            <Icon Name="trash" Size="14" Color="var(--red)" />
+                        </button>
+                    }
+                }
+            </li>
+        }
+    </ul>
+
+    <div style="margin-top:0.75rem;display:flex;flex-direction:column;gap:0.35rem;">
+        <input class="ui-input" @bind="_newName" @bind:event="oninput" placeholder="nazwa notebooka" data-testid="new-notebook-name" />
+        <button class="ui-btn" @onclick="CreateNotebookAsync" disabled="@string.IsNullOrWhiteSpace(_newName)" data-testid="create-notebook">
+            <Icon Name="save" Size="14" /> Nowy
+        </button>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string? CurrentOpenPath { get; set; }
+    [Parameter] public EventCallback<string> OnOpen { get; set; }
+    [Parameter] public EventCallback OnCurrentDeleted { get; set; }
+    [Parameter] public string? RootDirectory { get; set; }
+
+    private string _rootDir = "";
+    private string _currentDir = "";
+    private List<string> _dirs = new();
+    private List<string> _files = new();
+    private string _newName = "";
+    private string? _renamingPath;
+    private string _renameName = "";
+    private string? _confirmingDeletePath;
+
+    protected override void OnInitialized()
+    {
+        _rootDir = RootDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "SharpNotebook");
+        Directory.CreateDirectory(_rootDir);
+        _currentDir = _rootDir;
+        Refresh();
+    }
+
+    private void Refresh()
+    {
+        _dirs = Directory.GetDirectories(_currentDir).OrderBy(d => d).ToList();
+        _files = Directory.GetFiles(_currentDir, "*" + NotebookFile.Extension).OrderBy(f => f).ToList();
+    }
+
+    private void NavigateInto(string dir)
+    {
+        _currentDir = dir;
+        Refresh();
+    }
+
+    private void NavigateUp()
+    {
+        if (_currentDir == _rootDir)
+            return;
+
+        _currentDir = Directory.GetParent(_currentDir)?.FullName ?? _rootDir;
+        Refresh();
+    }
+
+    private async Task CreateNotebookAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newName))
+            return;
+
+        var path = Path.Combine(_currentDir, _newName + NotebookFile.Extension);
+        NotebookFile.Save(path, NotebookFile.CreateEmpty());
+        _newName = "";
+        Refresh();
+        await OnOpen.InvokeAsync(path);
+    }
+
+    private async Task OpenAsync(string path) => await OnOpen.InvokeAsync(path);
+
+    private void StartRename(string path)
+    {
+        _renamingPath = path;
+        _renameName = Path.GetFileNameWithoutExtension(path);
+    }
+
+    private async Task ConfirmRenameAsync()
+    {
+        if (_renamingPath is null || string.IsNullOrWhiteSpace(_renameName))
+            return;
+
+        var newPath = Path.Combine(Path.GetDirectoryName(_renamingPath)!, _renameName + NotebookFile.Extension);
+        var wasOpen = _renamingPath == CurrentOpenPath;
+        File.Move(_renamingPath, newPath);
+        _renamingPath = null;
+        Refresh();
+        if (wasOpen)
+            await OnOpen.InvokeAsync(newPath);
+    }
+
+    private async Task DeleteAsync(string path)
+    {
+        File.Delete(path);
+        _confirmingDeletePath = null;
+        var wasOpen = path == CurrentOpenPath;
+        Refresh();
+        if (wasOpen)
+            await OnCurrentDeleted.InvokeAsync();
+    }
+}

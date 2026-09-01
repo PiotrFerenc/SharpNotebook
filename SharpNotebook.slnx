@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SharpNotebook.Core/SharpNotebook.Core.csproj" />
+    <Project Path="src/SharpNotebook.Desktop/SharpNotebook.Desktop.csproj" />
+    <Project Path="src/SharpNotebook.Kernel.Contracts/SharpNotebook.Kernel.Contracts.csproj" />
+    <Project Path="src/SharpNotebook.Kernel.Host/SharpNotebook.Kernel.Host.csproj" />
+    <Project Path="src/SharpNotebook.Services/SharpNotebook.Services.csproj" />
+    <Project Path="src/SharpNotebook.Web/SharpNotebook.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SharpNotebook.Web.Tests/SharpNotebook.Web.Tests.csproj" />
+  </Folder>
+</Solution>

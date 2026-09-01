@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <UserSecretsId>d996be6a-3a2a-464b-9710-5514108ca005</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.1" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.1" />
+    <PackageReference Include="Avalonia.AvaloniaEdit" Version="12.0.0" />
+    <PackageReference Include="AvaloniaEdit.TextMate" Version="12.0.0" />
+    <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.3">
+      <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
+      <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="TextMateSharp.Grammars" Version="2.0.3" />
+    <PackageReference Include="TextMateSharp" Version="2.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\catppuccin-mocha-theme.json" />
+    <EmbeddedResource Include="Assets\catppuccin-latte-theme.json" />
+    <AvaloniaResource Include="Assets\Fonts\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SharpNotebook.Core\SharpNotebook.Core.csproj" />
+    <ProjectReference Include="..\SharpNotebook.Kernel.Contracts\SharpNotebook.Kernel.Contracts.csproj" />
+    <ProjectReference Include="..\SharpNotebook.Services\SharpNotebook.Services.csproj" />
+  </ItemGroup>
+</Project>

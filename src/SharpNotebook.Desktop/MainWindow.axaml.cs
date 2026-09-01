@@ -1,0 +1,990 @@
+using System.Collections.ObjectModel;
+using System.Net;
+using System.Text;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.Templates;
+using Avalonia.Input;
+using Avalonia.Interactivity;
+using Avalonia.Layout;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Platform.Storage;
+using Avalonia.Styling;
+using Avalonia.Threading;
+using AvaloniaEdit;
+using AvaloniaEdit.TextMate;
+using SharpNotebook.Core;
+using SharpNotebook.Kernel.Contracts;
+using SharpNotebook.Services;
+using TextMateSharp.Grammars;
+using TextMateSharp.Themes;
+
+namespace SharpNotebook.Desktop;
+
+public partial class MainWindow : Window
+{
+    private static readonly RegistryOptions RegistryOptions = new(ThemeName.DarkPlus);
+    private static readonly FontFamily MonoFont = new("avares://SharpNotebook.Desktop/Assets/Fonts#JetBrains Mono,Consolas,monospace");
+    private static IRawTheme? _mochaTheme;
+    private static IRawTheme? _latteTheme;
+
+    private static readonly (string Key, string Mocha, string Latte)[] PaletteMap =
+    [
+        ("CtpBaseBrush", "#1e1e2e", "#eff1f5"),
+        ("CtpMantleBrush", "#181825", "#e6e9ef"),
+        ("CtpCrustBrush", "#11111b", "#dce0e8"),
+        ("CtpSurface0Brush", "#313244", "#ccd0da"),
+        ("CtpSurface1Brush", "#45475a", "#bcc0cc"),
+        ("CtpSurface2Brush", "#585b70", "#acb0be"),
+        ("CtpTextBrush", "#cdd6f4", "#4c4f69"),
+        ("CtpSubtext1Brush", "#bac2de", "#5c5f77"),
+        ("CtpOverlay0Brush", "#6c7086", "#9ca0b0"),
+        ("CtpMauveBrush", "#cba6f7", "#8839ef"),
+        ("CtpMauveDimBrush", "#cba6f7", "#8839ef"),
+        ("CtpRedBrush", "#f38ba8", "#d20f39"),
+        ("CtpGreenBrush", "#a6e3a1", "#40a02b"),
+        ("CtpPeachBrush", "#fab387", "#fe640b"),
+    ];
+
+    private readonly string _rootDir;
+    private readonly string _favoritesPath;
+    private readonly IAiCodeGenerator _aiGenerator;
+    private readonly List<NotebookTab> _tabs = new();
+    private readonly ObservableCollection<CellTemplate> _favorites = new();
+
+    private const double SidebarWidth = 240;
+
+    private string _currentDir;
+    private bool _isDark = true;
+    private SidePanelMode _sidePanelMode = SidePanelMode.None;
+    private bool _leftCollapsed;
+    private bool _rightCollapsed;
+
+    // Shared, mutable brush instances (see App.axaml) — cached once here so code-built controls can use
+    // them directly; the light/dark toggle mutates these brushes' .Color in place, so every control that
+    // picked one up repaints live with no rebuild needed.
+    private IBrush _base = null!, _crust = null!, _surface0 = null!, _text = null!, _overlay0 = null!,
+        _mauve = null!, _mauveDim = null!, _red = null!, _green = null!, _peach = null!;
+
+    public MainWindow(IAiCodeGenerator aiGenerator)
+    {
+        InitializeComponent();
+        _aiGenerator = aiGenerator;
+        _rootDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "SharpNotebook");
+        _currentDir = _rootDir;
+
+        CacheBrushes();
+        RefreshFilesList();
+
+        _favoritesPath = FavoritesStore.DefaultPath;
+        foreach (var favorite in FavoritesStore.Load(_favoritesPath))
+            _favorites.Add(favorite);
+        FavoritesList.ItemsSource = _favorites;
+        FavoritesList.ItemTemplate = new FuncDataTemplate<CellTemplate>((template, _) => BuildFavoriteRow(template));
+
+        Closing += (_, _) =>
+        {
+            foreach (var tab in _tabs)
+                _ = tab.Session.DisposeAsync();
+        };
+    }
+
+    private void CacheBrushes()
+    {
+        var res = Application.Current!.Resources;
+        _base = (IBrush)res["CtpBaseBrush"]!;
+        _crust = (IBrush)res["CtpCrustBrush"]!;
+        _surface0 = (IBrush)res["CtpSurface0Brush"]!;
+        _text = (IBrush)res["CtpTextBrush"]!;
+        _overlay0 = (IBrush)res["CtpOverlay0Brush"]!;
+        _mauve = (IBrush)res["CtpMauveBrush"]!;
+        _mauveDim = (IBrush)res["CtpMauveDimBrush"]!;
+        _red = (IBrush)res["CtpRedBrush"]!;
+        _green = (IBrush)res["CtpGreenBrush"]!;
+        _peach = (IBrush)res["CtpPeachBrush"]!;
+    }
+
+    // ---------- file browser (nested folders) ----------
+
+    private sealed record FileEntry(string Label, string FullPath, bool IsDirectory)
+    {
+        public override string ToString() => Label;
+    }
+
+    private void RefreshFilesList()
+    {
+        Directory.CreateDirectory(_rootDir);
+        Directory.CreateDirectory(_currentDir);
+
+        var entries = new List<FileEntry>();
+        if (Path.GetFullPath(_currentDir) != Path.GetFullPath(_rootDir))
+            entries.Add(new FileEntry("⬆ ..", Path.GetDirectoryName(_currentDir.TrimEnd(Path.DirectorySeparatorChar))!, IsDirectory: true));
+
+        foreach (var dir in Directory.GetDirectories(_currentDir).OrderBy(d => d, StringComparer.OrdinalIgnoreCase))
+            entries.Add(new FileEntry("📁 " + Path.GetFileName(dir), dir, IsDirectory: true));
+
+        foreach (var file in Directory.GetFiles(_currentDir, "*" + NotebookFile.Extension).OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
+            entries.Add(new FileEntry("📄 " + Path.GetFileNameWithoutExtension(file), file, IsDirectory: false));
+
+        FilesList.ItemsSource = entries;
+    }
+
+    private async void FilesList_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (FilesList.SelectedItem is not FileEntry entry)
+            return;
+
+        if (entry.IsDirectory)
+        {
+            _currentDir = entry.FullPath;
+            RefreshFilesList();
+            return;
+        }
+
+        await OpenNotebookAsync(entry.FullPath);
+    }
+
+    private async void NewNotebook_Click(object? sender, RoutedEventArgs e)
+    {
+        var name = NewNotebookNameBox.Text?.Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            return;
+
+        Directory.CreateDirectory(_currentDir);
+        var path = Path.Combine(_currentDir, name + NotebookFile.Extension);
+        if (!File.Exists(path))
+            NotebookFile.Save(path, NotebookFile.CreateEmpty());
+
+        NewNotebookNameBox.Text = "";
+        RefreshFilesList();
+        await OpenNotebookAsync(path);
+    }
+
+    // ---------- sidebar collapse ----------
+
+    // Setting the Grid column's own width to 0 (not just hiding its content) is what lets the middle
+    // (Tabs) column, being "*", actually reclaim the freed space — hiding only the Border would leave an
+    // empty 240px gap instead of the middle column expanding into it.
+    private void ToggleLeftSidebar_Click(object? sender, RoutedEventArgs e)
+    {
+        _leftCollapsed = !_leftCollapsed;
+        RootGrid.ColumnDefinitions[0].Width = new GridLength(_leftCollapsed ? 0 : SidebarWidth);
+        LeftSidebar.IsVisible = !_leftCollapsed;
+    }
+
+    private void ToggleRightSidebar_Click(object? sender, RoutedEventArgs e)
+    {
+        _rightCollapsed = !_rightCollapsed;
+        RootGrid.ColumnDefinitions[2].Width = new GridLength(_rightCollapsed ? 0 : SidebarWidth);
+        RightSidebar.IsVisible = !_rightCollapsed;
+    }
+
+    // ---------- favorites (cell templates) ----------
+
+    // ItemsControl container recycling clears a container's Content to null before reusing/discarding it
+    // (ClearContainerForItemOverride) — that null re-enters this same template function, not just fresh
+    // items, so it must tolerate a null template rather than assume every call is a real row.
+    private Control BuildFavoriteRow(CellTemplate? template)
+    {
+        if (template is null)
+            return new Border();
+
+        var nameText = new TextBlock
+        {
+            Text = template.Name,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        var typeTag = new TextBlock
+        {
+            Text = template.Type switch { CellType.Code => "K", CellType.Markdown => "M", _ => "AI" },
+            Foreground = _overlay0,
+            FontSize = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var insertButton = new Button { Content = "+", Padding = new Thickness(6, 0), FontSize = 12 };
+        var deleteButton = new Button { Content = "✕", Padding = new Thickness(6, 0), FontSize = 12 };
+        ToolTip.SetTip(insertButton, "Dodaj jako nową komórkę");
+
+        insertButton.Click += (_, _) => InsertFavoriteIntoCurrentTab(template);
+        // Deferred rather than synchronous: removing the bound item straight from its own container's
+        // Click handler, while that Click is still routing through the very container about to be
+        // recycled, is a known Avalonia/WPF ItemsControl footgun. Posting lets the click finish
+        // dispatching first, so the ListBox's container teardown happens on a clean turn afterward.
+        deleteButton.Click += (_, _) => Dispatcher.UIThread.Post(() => RemoveFavorite(template));
+
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto,Auto") };
+        Grid.SetColumn(nameText, 0);
+        Grid.SetColumn(typeTag, 1);
+        Grid.SetColumn(insertButton, 2);
+        Grid.SetColumn(deleteButton, 3);
+        typeTag.Margin = new Thickness(4, 0, 6, 0);
+        row.Children.Add(nameText);
+        row.Children.Add(typeTag);
+        row.Children.Add(insertButton);
+        row.Children.Add(deleteButton);
+        return row;
+    }
+
+    private void InsertFavoriteIntoCurrentTab(CellTemplate template)
+    {
+        var tab = CurrentTab;
+        if (tab is null)
+            return;
+
+        SyncEditorsToCells(tab);
+        tab.Notebook.Cells.Add(new Cell { Type = template.Type, Source = template.Source });
+        RenderCells(tab);
+        MarkDirty(tab);
+    }
+
+    private void RemoveFavorite(CellTemplate template)
+    {
+        _favorites.Remove(template);
+        FavoritesStore.Save(_favoritesPath, _favorites);
+    }
+
+    private void SaveAsFavorite(Cell cell, string source)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+            return;
+
+        _favorites.Add(new CellTemplate(DeriveTemplateName(source), cell.Type, source));
+        FavoritesStore.Save(_favoritesPath, _favorites);
+    }
+
+    private static string DeriveTemplateName(string source)
+    {
+        var firstLine = source
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault() ?? "";
+        if (firstLine.Length > 40)
+            firstLine = firstLine[..40] + "…";
+        return string.IsNullOrWhiteSpace(firstLine) ? "Bez nazwy" : firstLine;
+    }
+
+    // ---------- tabs ----------
+
+    private enum SidePanelMode { None, Variables, Packages }
+
+    private NotebookTab? CurrentTab => (Tabs.SelectedItem as TabItem)?.Tag as NotebookTab;
+
+    private async Task OpenNotebookAsync(string path)
+    {
+        var existing = _tabs.FirstOrDefault(t => string.Equals(t.Path, path, StringComparison.Ordinal));
+        if (existing is not null)
+        {
+            Tabs.SelectedItem = existing.TabItem;
+            return;
+        }
+
+        var notebook = NotebookFile.Load(path);
+        var session = new NotebookSession();
+        await session.StartAsync();
+
+        var cellsPanel = new StackPanel { Spacing = 1 };
+        var scroll = new ScrollViewer { Content = cellsPanel, Background = Brushes.Transparent };
+
+        var tab = new NotebookTab
+        {
+            Path = path,
+            Notebook = notebook,
+            Session = session,
+            CellsPanel = cellsPanel,
+            Scroll = scroll,
+        };
+
+        var nameText = new TextBlock { Text = Path.GetFileNameWithoutExtension(path), VerticalAlignment = VerticalAlignment.Center };
+        var dirtyDot = new TextBlock { Text = " ●", Foreground = _peach, IsVisible = false, VerticalAlignment = VerticalAlignment.Center };
+        var closeButton = new Button { Content = "✕", Padding = new Thickness(4, 0), FontSize = 11 };
+        closeButton.Click += (_, _) => CloseTab(tab);
+
+        var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4 };
+        header.Children.Add(nameText);
+        header.Children.Add(dirtyDot);
+        header.Children.Add(closeButton);
+        tab.DirtyDot = dirtyDot;
+
+        var trustButton = new Button { Content = "Ufaj temu notebookowi", IsVisible = !notebook.Trusted, Foreground = _red, BorderBrush = _red };
+        var addCellButton = new Button { Content = "+ Dodaj komórkę" };
+        var saveButton = new Button { Content = "Zapisz" };
+        var restartButton = new Button { Content = "⟳ Restart i uruchom wszystko" };
+
+        trustButton.Click += async (_, _) =>
+        {
+            tab.Notebook.Trusted = true;
+            trustButton.IsVisible = false;
+            RenderCells(tab);
+            await SaveCurrentNotebookAsync(tab);
+        };
+        addCellButton.Click += (_, _) =>
+        {
+            SyncEditorsToCells(tab);
+            tab.Notebook.Cells.Add(new Cell());
+            RenderCells(tab);
+            MarkDirty(tab);
+        };
+        saveButton.Click += async (_, _) =>
+        {
+            SyncEditorsToCells(tab);
+            await SaveCurrentNotebookAsync(tab);
+        };
+        restartButton.Click += async (_, _) => await RestartRunAllAsync(tab);
+
+        var actionBar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Margin = new Thickness(12, 8) };
+        actionBar.Children.Add(trustButton);
+        actionBar.Children.Add(addCellButton);
+        actionBar.Children.Add(saveButton);
+        actionBar.Children.Add(restartButton);
+        var actionBarBorder = new Border
+        {
+            Child = actionBar,
+            Background = (IBrush)Application.Current!.Resources["CtpMantleBrush"]!,
+            BorderBrush = _surface0,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+        };
+
+        var content = new DockPanel();
+        DockPanel.SetDock(actionBarBorder, Dock.Top);
+        content.Children.Add(actionBarBorder);
+        content.Children.Add(scroll);
+
+        var tabItem = new TabItem { Header = header, Content = content, Tag = tab };
+        tab.TabItem = tabItem;
+
+        _tabs.Add(tab);
+        Tabs.Items.Add(tabItem);
+        Tabs.SelectedItem = tabItem;
+
+        RenderCells(tab);
+    }
+
+    private void CloseTab(NotebookTab tab)
+    {
+        _ = tab.Session.DisposeAsync();
+        Tabs.Items.Remove(tab.TabItem);
+        _tabs.Remove(tab);
+    }
+
+    private async void Tabs_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (SidePanel.IsVisible)
+            await RefreshSidePanelAsync();
+    }
+
+    // ---------- cell model sync / rendering ----------
+
+    private static void MarkDirty(NotebookTab tab)
+    {
+        tab.Dirty = true;
+        tab.DirtyDot.IsVisible = true;
+    }
+
+    private Task SaveCurrentNotebookAsync(NotebookTab tab)
+    {
+        NotebookFile.Save(tab.Path, tab.Notebook);
+        tab.Dirty = false;
+        tab.DirtyDot.IsVisible = false;
+        return Task.CompletedTask;
+    }
+
+    // TextEditor content isn't kept synced to Cell.Source on every keystroke; pull it back right before
+    // any save/run/rebuild, since nothing reads Cell.Source in between.
+    private static void SyncEditorsToCells(NotebookTab tab)
+    {
+        foreach (var slot in tab.Slots)
+            slot.Cell.Source = slot.Editor.Text;
+    }
+
+    private void RenderCells(NotebookTab tab)
+    {
+        tab.CellsPanel.Children.Clear();
+        tab.Slots.Clear();
+
+        foreach (var cell in tab.Notebook.Cells)
+        {
+            var slot = BuildCellSlot(tab, cell);
+            tab.Slots.Add(slot);
+            tab.CellsPanel.Children.Add(slot.Root);
+        }
+    }
+
+    private void MoveCell(NotebookTab tab, Cell cell, int delta)
+    {
+        SyncEditorsToCells(tab);
+        var index = tab.Notebook.Cells.IndexOf(cell);
+        var newIndex = index + delta;
+        if (newIndex < 0 || newIndex >= tab.Notebook.Cells.Count)
+            return;
+
+        (tab.Notebook.Cells[index], tab.Notebook.Cells[newIndex]) = (tab.Notebook.Cells[newIndex], tab.Notebook.Cells[index]);
+        RenderCells(tab);
+        MarkDirty(tab);
+    }
+
+    private void DeleteCell(NotebookTab tab, Cell cell)
+    {
+        SyncEditorsToCells(tab);
+        tab.Notebook.Cells.Remove(cell);
+        RenderCells(tab);
+        MarkDirty(tab);
+    }
+
+    private void FocusNextOrCreateCell(NotebookTab tab, Cell currentCell)
+    {
+        var index = tab.Notebook.Cells.IndexOf(currentCell);
+        if (index < 0)
+            return;
+
+        if (index + 1 < tab.Slots.Count)
+        {
+            tab.Slots[index + 1].Editor.Focus();
+            return;
+        }
+
+        SyncEditorsToCells(tab);
+        tab.Notebook.Cells.Add(new Cell());
+        RenderCells(tab);
+        MarkDirty(tab);
+        tab.Slots[^1].Editor.Focus();
+    }
+
+    // ---------- one cell's controls ----------
+
+    private CellSlot BuildCellSlot(NotebookTab tab, Cell cell)
+    {
+        var grip = new TextBlock
+        {
+            Text = "⠿",
+            Foreground = _overlay0,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 4, 0),
+            Cursor = new Cursor(StandardCursorType.SizeAll),
+        };
+
+        var typeBox = new ComboBox
+        {
+            ItemsSource = new[] { CellType.Code, CellType.Markdown, CellType.Ai },
+            SelectedItem = cell.Type,
+            Width = 110,
+        };
+
+        var upButton = new Button { Content = "↑" };
+        var downButton = new Button { Content = "↓" };
+        var deleteButton = new Button { Content = "Usuń" };
+        var favoriteButton = new Button { Content = "☆" };
+        ToolTip.SetTip(favoriteButton, "Zapisz jako ulubione");
+        var actionButton = new Button
+        {
+            Content = cell.Type == CellType.Ai ? "✨ Generuj kod" : "▶ Uruchom",
+            IsVisible = cell.Type != CellType.Markdown,
+            IsEnabled = tab.Notebook.Trusted,
+        };
+        var execBadge = new TextBlock
+        {
+            VerticalAlignment = VerticalAlignment.Center,
+            FontWeight = FontWeight.Bold,
+            Foreground = _peach,
+            Text = cell.ExecutionCount is { } n ? $"[{n}]" : "",
+        };
+        var statusText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, FontSize = 11 };
+
+        var editor = new TextEditor
+        {
+            FontFamily = MonoFont,
+            FontSize = 14,
+            ShowLineNumbers = true,
+            Height = 160,
+            Text = cell.Source,
+            Background = _base,
+            Foreground = _text,
+            LineNumbersForeground = _overlay0,
+        };
+        editor.TextArea.SelectionBrush = _mauveDim;
+        editor.TextArea.Caret.CaretBrush = _mauve;
+
+        var errorText = new TextBlock { Foreground = _red, TextWrapping = TextWrapping.Wrap, IsVisible = false, Margin = new Thickness(0, 4, 0, 0) };
+
+        var outputPanel = new StackPanel { Spacing = 4, Margin = new Thickness(0, 6, 0, 0) };
+        foreach (var output in cell.Outputs)
+            outputPanel.Children.Add(RenderOutput(output));
+
+        var slot = new CellSlot(tab, cell, editor, execBadge, statusText, outputPanel, actionButton);
+        InstallHighlighting(slot, cell.Type);
+
+        typeBox.SelectionChanged += (_, _) =>
+        {
+            SyncEditorsToCells(tab);
+            cell.Type = (CellType)typeBox.SelectedItem!;
+            RenderCells(tab);
+            MarkDirty(tab);
+        };
+        upButton.Click += (_, _) => MoveCell(tab, cell, -1);
+        downButton.Click += (_, _) => MoveCell(tab, cell, 1);
+        deleteButton.Click += (_, _) => DeleteCell(tab, cell);
+        favoriteButton.Click += (_, _) => SaveAsFavorite(cell, slot.Editor.Text);
+        actionButton.Click += async (_, _) =>
+        {
+            if (cell.Type == CellType.Ai)
+                await GenerateAsync(slot, errorText);
+            else
+                await RunCellAsync(slot);
+        };
+
+        // Shift+Enter: run/generate, then move to (or create) the next cell — Ctrl+Enter: run in place.
+        // No Escape/arrow-key "command mode" cell navigation like Jupyter's — this covers the shortcut
+        // that actually saves keystrokes during normal editing; add that later if it's missed.
+        editor.KeyDown += async (_, e) =>
+        {
+            if (e.Key != Key.Enter || cell.Type == CellType.Markdown)
+                return;
+
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Shift))
+            {
+                e.Handled = true;
+                if (cell.Type == CellType.Ai)
+                    await GenerateAsync(slot, errorText);
+                else
+                    await RunCellAsync(slot);
+                FocusNextOrCreateCell(tab, cell);
+            }
+            else if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+            {
+                e.Handled = true;
+                if (cell.Type == CellType.Ai)
+                    await GenerateAsync(slot, errorText);
+                else
+                    await RunCellAsync(slot);
+            }
+        };
+
+        editor.TextChanged += (_, _) => MarkDirty(tab);
+
+        // Reorder by drag: press the grip, move over another cell, release to drop there. No live
+        // reordering while dragging (only on release) — swapping mid-drag would rebuild the visual tree
+        // and drop the grip's own pointer capture, breaking the gesture partway through.
+        var dragging = false;
+        grip.PointerPressed += (_, e) =>
+        {
+            dragging = true;
+            e.Pointer.Capture(grip);
+            e.Handled = true;
+        };
+        grip.PointerReleased += (_, e) =>
+        {
+            if (!dragging)
+                return;
+            dragging = false;
+            e.Pointer.Capture(null);
+
+            var pointerY = e.GetPosition(tab.CellsPanel).Y;
+            var currentIndex = tab.Notebook.Cells.IndexOf(cell);
+            var targetIndex = currentIndex;
+            foreach (var (s, i) in tab.Slots.Select((s, i) => (s, i)))
+            {
+                if (pointerY >= s.Root.Bounds.Y && pointerY <= s.Root.Bounds.Y + s.Root.Bounds.Height)
+                {
+                    targetIndex = i;
+                    break;
+                }
+            }
+
+            if (targetIndex != currentIndex && currentIndex >= 0)
+            {
+                SyncEditorsToCells(tab);
+                var moved = tab.Notebook.Cells[currentIndex];
+                tab.Notebook.Cells.RemoveAt(currentIndex);
+                tab.Notebook.Cells.Insert(targetIndex, moved);
+                RenderCells(tab);
+                MarkDirty(tab);
+            }
+        };
+
+        var header = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+        header.Children.Add(grip);
+        header.Children.Add(typeBox);
+        header.Children.Add(upButton);
+        header.Children.Add(downButton);
+        header.Children.Add(deleteButton);
+        header.Children.Add(favoriteButton);
+        header.Children.Add(actionButton);
+        header.Children.Add(execBadge);
+        header.Children.Add(statusText);
+
+        var body = new StackPanel { Spacing = 4 };
+        body.Children.Add(header);
+        body.Children.Add(editor);
+        body.Children.Add(errorText);
+        body.Children.Add(outputPanel);
+
+        slot.Root = new Border
+        {
+            Background = _base,
+            BorderBrush = _surface0,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(12),
+            Child = body,
+        };
+
+        return slot;
+    }
+
+    // ---------- execution ----------
+
+    private async Task RunCellAsync(CellSlot slot)
+    {
+        var tab = slot.Tab;
+        if (!tab.Notebook.Trusted)
+            return;
+
+        slot.ActionButton.IsEnabled = false;
+        slot.Cell.Outputs.Clear();
+        slot.OutputPanel.Children.Clear();
+        slot.Cell.Source = slot.Editor.Text;
+        slot.StatusText.Text = "⏳ uruchamianie...";
+        slot.StatusText.Foreground = _overlay0;
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var result = await tab.Session.RunCellAsync(
+            slot.Cell.Id.ToString(),
+            slot.Cell.Source,
+            (mime, data) => Dispatcher.UIThread.Post(() => AppendOutput(slot, mime, data)),
+            error => Dispatcher.UIThread.Post(() => AppendOutput(slot, "text/plain", $"ERROR: {error}")));
+        stopwatch.Stop();
+
+        slot.Cell.ExecutionCount = result.ExecutionCount;
+        slot.ExecBadge.Text = $"[{result.ExecutionCount}]";
+        slot.StatusText.Text = $"{(result.Success ? "✓" : "✗")} {FormatDuration(stopwatch.Elapsed)}";
+        slot.StatusText.Foreground = result.Success ? _green : _red;
+        slot.ActionButton.IsEnabled = true;
+        await SaveCurrentNotebookAsync(tab);
+
+        if (_sidePanelMode == SidePanelMode.Variables && CurrentTab == tab)
+            await RefreshSidePanelAsync();
+    }
+
+    private async Task GenerateAsync(CellSlot slot, TextBlock errorText)
+    {
+        var tab = slot.Tab;
+        if (!tab.Notebook.Trusted || string.IsNullOrWhiteSpace(slot.Editor.Text))
+            return;
+
+        slot.ActionButton.IsEnabled = false;
+        errorText.IsVisible = false;
+
+        try
+        {
+            var code = await _aiGenerator.GenerateAsync(slot.Editor.Text);
+            SyncEditorsToCells(tab);
+            slot.Cell.Source = code;
+            slot.Cell.Type = CellType.Code;
+            RenderCells(tab);
+            MarkDirty(tab);
+        }
+        catch (Exception ex)
+        {
+            errorText.Text = ex.Message;
+            errorText.IsVisible = true;
+            slot.ActionButton.IsEnabled = true;
+        }
+    }
+
+    private async Task RestartRunAllAsync(NotebookTab tab)
+    {
+        SyncEditorsToCells(tab);
+        await tab.Session.RestartAsync();
+
+        foreach (var cell in tab.Notebook.Cells)
+            cell.Outputs.Clear();
+        RenderCells(tab);
+
+        foreach (var slot in tab.Slots.ToList())
+        {
+            if (slot.Cell.Type == CellType.Code)
+                await RunCellAsync(slot);
+        }
+    }
+
+    // Mirrors the Web frontend's AppendOutput: a single Console.WriteLine(nonStringValue) arrives as two
+    // onOutput calls (the value, then the trailing newline) — merge consecutive text/plain chunks instead
+    // of rendering a stray empty box under real output.
+    private void AppendOutput(CellSlot slot, string mimeType, string data)
+    {
+        var last = slot.Cell.Outputs.Count > 0 ? slot.Cell.Outputs[^1] : null;
+        var canMerge = mimeType == "text/plain"
+            && last is { MimeType: "text/plain" }
+            && !data.StartsWith("ERROR:")
+            && !last.Data.StartsWith("ERROR:");
+
+        if (canMerge)
+        {
+            var merged = last! with { Data = last.Data + data };
+            slot.Cell.Outputs[^1] = merged;
+            if (slot.OutputPanel.Children[^1] is Border { Child: TextBlock tb })
+                tb.Text = merged.Data;
+        }
+        else
+        {
+            var output = new CellOutput(mimeType, data);
+            slot.Cell.Outputs.Add(output);
+            slot.OutputPanel.Children.Add(RenderOutput(output));
+        }
+    }
+
+    private Control RenderOutput(CellOutput output)
+    {
+        if (output.MimeType == "text/html")
+            return HtmlRenderer.Render(output.Data, _text);
+
+        if (output.MimeType == "image/png")
+        {
+            try
+            {
+                var bytes = Convert.FromBase64String(output.Data);
+                using var ms = new MemoryStream(bytes);
+                return new Border
+                {
+                    Background = _crust,
+                    BorderBrush = _surface0,
+                    BorderThickness = new Thickness(1),
+                    Padding = new Thickness(6),
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Child = new Image { Source = new Bitmap(ms), MaxWidth = 600 },
+                };
+            }
+            catch
+            {
+                return new TextBlock { Text = "[błąd renderowania obrazu]", Foreground = _red };
+            }
+        }
+
+        return new Border
+        {
+            Background = _crust,
+            BorderBrush = _surface0,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(8, 6),
+            Child = new TextBlock
+            {
+                Text = output.Data,
+                TextWrapping = TextWrapping.Wrap,
+                FontFamily = MonoFont,
+                Foreground = output.Data.StartsWith("ERROR:") ? _red : _green,
+            },
+        };
+    }
+
+    // ---------- syntax highlighting / theme ----------
+
+    private void InstallHighlighting(CellSlot slot, CellType type)
+    {
+        if (type != CellType.Code)
+        {
+            slot.Installation = null;
+            return;
+        }
+
+        try
+        {
+            var installation = slot.Editor.InstallTextMate(RegistryOptions);
+            installation.SetTheme(CurrentRawTheme);
+            var language = RegistryOptions.GetLanguageByExtension(".cs");
+            if (language is not null)
+                installation.SetGrammar(RegistryOptions.GetScopeByLanguageId(language.Id));
+            slot.Installation = installation;
+        }
+        catch
+        {
+            // best-effort — plain editing still works without highlighting
+        }
+    }
+
+    private static IRawTheme LoadEmbeddedTheme(string resourceSuffix)
+    {
+        var assembly = typeof(MainWindow).Assembly;
+        var resourceName = assembly.GetManifestResourceNames().First(n => n.EndsWith(resourceSuffix, StringComparison.Ordinal));
+        using var stream = assembly.GetManifestResourceStream(resourceName)!;
+        using var reader = new StreamReader(stream);
+        return TextMateSharp.Internal.Themes.Reader.ThemeReader.ReadThemeSync(reader);
+    }
+
+    private static IRawTheme MochaTheme => _mochaTheme ??= LoadEmbeddedTheme("catppuccin-mocha-theme.json");
+    private static IRawTheme LatteTheme => _latteTheme ??= LoadEmbeddedTheme("catppuccin-latte-theme.json");
+    private IRawTheme CurrentRawTheme => _isDark ? MochaTheme : LatteTheme;
+
+    private void ThemeToggle_Click(object? sender, RoutedEventArgs e)
+    {
+        _isDark = !_isDark;
+        ThemeToggleButton.Content = _isDark ? "🌙 Dark" : "☀️ Light";
+        Application.Current!.RequestedThemeVariant = _isDark ? ThemeVariant.Dark : ThemeVariant.Light;
+
+        foreach (var (key, mocha, latte) in PaletteMap)
+            ((SolidColorBrush)Application.Current!.Resources[key]!).Color = Color.Parse(_isDark ? mocha : latte);
+
+        foreach (var tab in _tabs)
+            foreach (var slot in tab.Slots)
+                slot.Installation?.SetTheme(CurrentRawTheme);
+    }
+
+    // ---------- variables / packages side panel ----------
+
+    private async void ToggleVariables_Click(object? sender, RoutedEventArgs e) => await ToggleSidePanelAsync(SidePanelMode.Variables);
+    private async void TogglePackages_Click(object? sender, RoutedEventArgs e) => await ToggleSidePanelAsync(SidePanelMode.Packages);
+    private async void RefreshSidePanel_Click(object? sender, RoutedEventArgs e) => await RefreshSidePanelAsync();
+
+    private void CloseSidePanel_Click(object? sender, RoutedEventArgs e)
+    {
+        _sidePanelMode = SidePanelMode.None;
+        SidePanel.IsVisible = false;
+    }
+
+    private async Task ToggleSidePanelAsync(SidePanelMode mode)
+    {
+        if (_sidePanelMode == mode && SidePanel.IsVisible)
+        {
+            _sidePanelMode = SidePanelMode.None;
+            SidePanel.IsVisible = false;
+            return;
+        }
+
+        _sidePanelMode = mode;
+        SidePanel.IsVisible = true;
+        SidePanelTitle.Text = mode == SidePanelMode.Variables ? "Zmienne" : "Paczki NuGet";
+        await RefreshSidePanelAsync();
+    }
+
+    private async Task RefreshSidePanelAsync()
+    {
+        var tab = CurrentTab;
+        if (tab is null || _sidePanelMode == SidePanelMode.None)
+            return;
+
+        if (_sidePanelMode == SidePanelMode.Variables)
+        {
+            var vars = await tab.Session.GetVariablesAsync();
+            SidePanelList.ItemsSource = vars.Count == 0
+                ? new[] { "(brak zmiennych)" }
+                : vars.Select(v => $"{v.Name} : {v.Type} = {Truncate(v.Value, 200)}").ToList();
+        }
+        else
+        {
+            var pkgs = await tab.Session.GetPackagesAsync();
+            SidePanelList.ItemsSource = pkgs.Count == 0
+                ? new[] { "(brak zainstalowanych paczek)" }
+                : pkgs.Select(p => $"{p.Id} @ {p.Version}").ToList();
+        }
+    }
+
+    private static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+
+    private static string FormatDuration(TimeSpan elapsed) =>
+        elapsed.TotalMilliseconds < 1000 ? $"{elapsed.TotalMilliseconds:F0}ms" : $"{elapsed.TotalSeconds:F2}s";
+
+    // ---------- export ----------
+
+    private async void ExportCs_Click(object? sender, RoutedEventArgs e)
+    {
+        var tab = CurrentTab;
+        if (tab is null)
+            return;
+        SyncEditorsToCells(tab);
+
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Eksportuj do .cs",
+            SuggestedFileName = Path.GetFileNameWithoutExtension(tab.Path) + ".cs",
+            FileTypeChoices = [new FilePickerFileType("C# script") { Patterns = ["*.cs"] }],
+        });
+        if (file is null)
+            return;
+
+        var sb = new StringBuilder();
+        var n = 1;
+        foreach (var cell in tab.Notebook.Cells.Where(c => c.Type == CellType.Code))
+        {
+            sb.AppendLine($"// --- Cell {n++} ---");
+            sb.AppendLine(cell.Source);
+            sb.AppendLine();
+        }
+
+        await using var stream = await file.OpenWriteAsync();
+        await using var writer = new StreamWriter(stream);
+        await writer.WriteAsync(sb.ToString());
+    }
+
+    private async void ExportHtml_Click(object? sender, RoutedEventArgs e)
+    {
+        var tab = CurrentTab;
+        if (tab is null)
+            return;
+        SyncEditorsToCells(tab);
+
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Eksportuj do .html",
+            SuggestedFileName = Path.GetFileNameWithoutExtension(tab.Path) + ".html",
+            FileTypeChoices = [new FilePickerFileType("HTML") { Patterns = ["*.html"] }],
+        });
+        if (file is null)
+            return;
+
+        var html = BuildHtmlExport(tab.Notebook, Path.GetFileNameWithoutExtension(tab.Path));
+        await using var stream = await file.OpenWriteAsync();
+        await using var writer = new StreamWriter(stream);
+        await writer.WriteAsync(html);
+    }
+
+    private static string BuildHtmlExport(Notebook notebook, string title)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<!doctype html><html><head><meta charset=\"utf-8\"><title>").Append(WebUtility.HtmlEncode(title)).Append("</title>");
+        sb.Append("<style>body{background:#1e1e2e;color:#cdd6f4;font-family:monospace;padding:2em;} pre{background:#11111b;color:#a6e3a1;padding:0.8em;white-space:pre-wrap;border:1px solid #313244;} .src{background:#181825;padding:0.8em;border:1px solid #313244;white-space:pre-wrap;margin-bottom:0.4em;}</style></head><body>");
+        sb.Append("<h1>").Append(WebUtility.HtmlEncode(title)).Append("</h1>");
+
+        foreach (var cell in notebook.Cells)
+        {
+            sb.Append("<div class=\"src\">").Append(WebUtility.HtmlEncode(cell.Source)).Append("</div>");
+            foreach (var output in cell.Outputs)
+            {
+                if (output.MimeType == "image/png")
+                    sb.Append($"<img src=\"data:image/png;base64,{output.Data}\" style=\"max-width:600px;\" />");
+                else if (output.MimeType == "text/html")
+                    sb.Append(output.Data);
+                else
+                    sb.Append("<pre>").Append(WebUtility.HtmlEncode(output.Data)).Append("</pre>");
+            }
+        }
+
+        sb.Append("</body></html>");
+        return sb.ToString();
+    }
+
+    // ---------- data holders ----------
+
+    private sealed class NotebookTab
+    {
+        public required string Path;
+        public required Notebook Notebook;
+        public required NotebookSession Session;
+        public required StackPanel CellsPanel;
+        public required ScrollViewer Scroll;
+        public List<CellSlot> Slots { get; } = new();
+        public bool Dirty;
+        public TextBlock DirtyDot = null!;
+        public TabItem TabItem = null!;
+    }
+
+    private sealed class CellSlot(NotebookTab tab, Cell cell, TextEditor editor, TextBlock execBadge, TextBlock statusText, StackPanel outputPanel, Button actionButton)
+    {
+        public NotebookTab Tab { get; } = tab;
+        public Cell Cell { get; } = cell;
+        public TextEditor Editor { get; } = editor;
+        public TextBlock ExecBadge { get; } = execBadge;
+        public TextBlock StatusText { get; } = statusText;
+        public StackPanel OutputPanel { get; } = outputPanel;
+        public Button ActionButton { get; } = actionButton;
+        public Control Root { get; set; } = null!;
+        public TextMate.Installation? Installation { get; set; }
+    }
+}

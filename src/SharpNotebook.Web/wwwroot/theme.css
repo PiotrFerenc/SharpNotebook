@@ -1,0 +1,227 @@
+/* SharpNotebook — Catppuccin Mocha. Soft, low-glare dev-tool surface with sharp (0-radius) corners
+   throughout — a later, deliberate change from this world's original softly-rounded corners. */
+
+:root {
+    --base: #1e1e2e;
+    --mantle: #181825;
+    --crust: #11111b;
+    --surface0: #313244;
+    --surface1: #45475a;
+    --surface2: #585b70;
+    --text: #cdd6f4;
+    --subtext1: #bac2de;
+    --subtext0: #a6adc8;
+    --overlay0: #6c7086;
+
+    --mauve: #cba6f7;
+    --pink: #f5c2e7;
+    --red: #f38ba8;
+    --peach: #fab387;
+    --yellow: #f9e2af;
+    --green: #a6e3a1;
+    --teal: #94e2d5;
+    --sapphire: #74c7ec;
+    --blue: #89b4fa;
+    --lavender: #b4befe;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html, body {
+    background: var(--base);
+    color: var(--text);
+    font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+}
+
+::selection {
+    background: var(--mauve);
+    color: var(--crust);
+}
+
+::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--mantle);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--surface2);
+    border-radius: 0;
+    border: 3px solid var(--mantle);
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--overlay0);
+}
+
+:focus-visible {
+    outline: 2px solid var(--mauve);
+    outline-offset: 2px;
+    border-radius: 0;
+}
+
+/* ---- surfaces ---- */
+
+.ui-panel {
+    background: var(--mantle);
+    border: 1px solid var(--surface0);
+    border-radius: 0;
+    box-shadow: 0 4px 14px rgba(17, 17, 27, 0.45);
+}
+
+.ui-title {
+    font-weight: 700;
+    color: var(--lavender);
+    letter-spacing: 0.01em;
+}
+
+.ui-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45em;
+    font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text);
+    background: var(--surface0);
+    border: 1px solid var(--surface1);
+    border-radius: 0;
+    padding: 0.5em 0.85em;
+    cursor: pointer;
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.ui-btn:hover:not(:disabled) {
+    background: var(--surface1);
+    border-color: var(--mauve);
+    color: var(--mauve);
+}
+
+.ui-btn:active:not(:disabled) {
+    background: var(--surface2);
+}
+
+.ui-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.ui-btn--danger:hover:not(:disabled) {
+    border-color: var(--red);
+    color: var(--red);
+}
+
+.ui-input {
+    background: var(--crust);
+    color: var(--green);
+    border: 1px solid var(--surface1);
+    border-radius: 0;
+    font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+    padding: 0.55em 0.7em;
+    width: 100%;
+}
+
+.ui-input:focus {
+    border-color: var(--mauve);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(203, 166, 247, 0.25);
+}
+
+select.ui-input {
+    color: var(--text);
+    width: auto;
+}
+
+.ui-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--crust);
+    background: var(--peach);
+    border-radius: 0;
+    padding: 0.2em 0.6em;
+}
+
+.ui-banner {
+    background: var(--surface0);
+    border: 1px solid var(--peach);
+    border-radius: 0;
+    color: var(--peach);
+    padding: 0.85em 1em;
+    display: flex;
+    align-items: center;
+    gap: 0.75em;
+    flex-wrap: wrap;
+}
+
+.ui-output {
+    background: var(--crust);
+    color: var(--green);
+    border: 1px solid var(--surface0);
+    border-radius: 0;
+    padding: 0.7em 0.85em;
+    font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+    white-space: pre-wrap;
+    margin: 0;
+}
+
+.ui-output--html {
+    background: var(--text);
+    color: var(--crust);
+}
+
+.ui-list-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3em;
+}
+
+.ui-list-item > button.ui-link {
+    background: none;
+    border: none;
+    border-radius: 0;
+    color: var(--subtext1);
+    font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+    cursor: pointer;
+    padding: 0.2em 0.4em;
+}
+
+.ui-list-item > button.ui-link:hover {
+    background: var(--surface0);
+    color: var(--mauve);
+}
+
+.ui-list-item > button.ui-link.ui-link--active {
+    color: var(--mauve);
+    font-weight: 700;
+}
+
+.ui-icon {
+    flex-shrink: 0;
+}
+
+/* BlazorMonaco's own container div has no intrinsic height (empty content = 0px), and its automatic
+   layout measures *this* element, not its parent — without an explicit height it collapses to ~5px
+   regardless of the wrapper's real (correct) height. Confirmed via getBoundingClientRect in a real
+   browser: wrapper was genuinely 220px, .monaco-editor-container inside it was 5px. */
+.monaco-editor-container {
+    height: 100%;
+}
+
+@media (max-width: 720px) {
+    .app-shell {
+        flex-direction: column;
+        height: auto !important;
+        min-height: 100vh;
+    }
+
+    .file-browser {
+        width: 100% !important;
+        max-height: 40vh;
+    }
+}

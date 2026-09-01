@@ -1,0 +1,27 @@
+{
+  "name": "Catppuccin Latte (SharpNotebook)",
+  "type": "light",
+  "colors": {
+    "editor.background": "#eff1f5",
+    "editor.foreground": "#4c4f69",
+    "editor.lineHighlightBackground": "#ccd0da",
+    "editorLineNumber.foreground": "#9ca0b0",
+    "editorCursor.foreground": "#8839ef",
+    "editor.selectionBackground": "#acb0be"
+  },
+  "tokenColors": [
+    { "scope": ["comment", "punctuation.definition.comment"], "settings": { "foreground": "#9ca0b0", "fontStyle": "italic" } },
+    { "scope": ["string", "string.quoted"], "settings": { "foreground": "#40a02b" } },
+    { "scope": ["constant.numeric"], "settings": { "foreground": "#fe640b" } },
+    { "scope": ["constant.language", "constant.character", "constant.other"], "settings": { "foreground": "#fe640b" } },
+    { "scope": ["keyword", "storage.type", "storage.modifier", "keyword.control"], "settings": { "foreground": "#8839ef" } },
+    { "scope": ["keyword.operator"], "settings": { "foreground": "#179299" } },
+    { "scope": ["entity.name.type", "entity.name.class", "support.type", "support.class"], "settings": { "foreground": "#df8e1d" } },
+    { "scope": ["entity.name.function", "support.function"], "settings": { "foreground": "#1e66f5" } },
+    { "scope": ["variable", "variable.other", "variable.parameter"], "settings": { "foreground": "#4c4f69" } },
+    { "scope": ["entity.name.variable.field", "variable.other.property"], "settings": { "foreground": "#ea76cb" } },
+    { "scope": ["punctuation", "meta.brace"], "settings": { "foreground": "#6c6f85" } },
+    { "scope": ["entity.name.tag"], "settings": { "foreground": "#8839ef" } },
+    { "scope": ["entity.other.attribute-name"], "settings": { "foreground": "#df8e1d" } }
+  ]
+}

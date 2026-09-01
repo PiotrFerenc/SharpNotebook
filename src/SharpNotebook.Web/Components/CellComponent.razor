@@ -1,0 +1,203 @@
+@using SharpNotebook.Core
+@using SharpNotebook.Services
+@using BlazorMonaco
+@using BlazorMonaco.Editor
+@inject IAiCodeGenerator AiGenerator
+
+<div class="ui-panel" style="margin:0.75rem 0;padding:0.6rem;">
+    <div style="display:flex;gap:0.4rem;align-items:center;margin-bottom:0.5rem;flex-wrap:wrap;">
+        <select class="ui-input" @bind="Cell.Type" @bind:after="OnChanged.InvokeAsync" data-testid="cell-type">
+            <option value="@CellType.Code">Kod</option>
+            <option value="@CellType.Markdown">Markdown</option>
+            <option value="@CellType.Ai">AI</option>
+        </select>
+        <button class="ui-btn" @onclick="OnMoveUp" disabled="@(!CanMoveUp)" title="Przesuń w górę"><Icon Name="chevron-up" Size="14" /></button>
+        <button class="ui-btn" @onclick="OnMoveDown" disabled="@(!CanMoveDown)" title="Przesuń w dół"><Icon Name="chevron-down" Size="14" /></button>
+        <button class="ui-btn ui-btn--danger" @onclick="OnDelete" title="Usuń komórkę"><Icon Name="trash" Size="14" Color="var(--red)" /></button>
+        @if (Cell.Type == CellType.Code)
+        {
+            <button class="ui-btn" @onclick="RunAsync" disabled="@(_running || !Trusted)" data-testid="cell-run">
+                <Icon Name="@(_running ? "restart" : "play")" Size="14" Color="var(--green)" /> @(_running ? "Uruchamianie..." : "Uruchom")
+            </button>
+            @if (Cell.ExecutionCount is { } n)
+            {
+                <span class="ui-badge">[@n]</span>
+            }
+        }
+        else if (Cell.Type == CellType.Ai)
+        {
+            <button class="ui-btn" @onclick="GenerateAsync" disabled="@(_generating || !Trusted)" data-testid="cell-generate">
+                <Icon Name="@(_generating ? "restart" : "play")" Size="14" Color="var(--mauve)" /> @(_generating ? "Generowanie..." : "Generuj kod")
+            </button>
+        }
+        else
+        {
+            <button class="ui-btn" @onclick="() => _previewing = !_previewing">
+                <Icon Name="@(_previewing ? "pencil" : "eye")" Size="14" /> @(_previewing ? "Edytuj" : "Podgląd")
+            </button>
+        }
+    </div>
+
+    @if (Cell.Type == CellType.Markdown && _previewing)
+    {
+        <div class="ui-input" @onclick="() => _previewing = false" style="min-height:2rem;cursor:text;color:var(--text);">@((MarkupString)Markdig.Markdown.ToHtml(Cell.Source))</div>
+    }
+    else
+    {
+        <div style="height:220px;border:1px solid var(--surface1);border-radius:0;overflow:hidden;resize:vertical;" data-testid="cell-source">
+            <StandaloneCodeEditor
+                @key="@($"{Cell.Id}-{Cell.Type}")"
+                @ref="_editor"
+                Id="@($"editor-{Cell.Id}")"
+                ConstructionOptions="EditorConstructionOptions"
+                OnDidChangeModelContent="EditorContentChangedAsync" />
+        </div>
+    }
+
+    @if (Cell.Type == CellType.Ai && _aiError is not null)
+    {
+        <pre class="ui-output" style="color:var(--red);margin-top:0.4rem;">@_aiError</pre>
+    }
+
+    @if (Cell.Type == CellType.Code && Cell.Outputs.Count > 0)
+    {
+        <div data-testid="cell-output" style="margin-top:0.4rem;display:flex;flex-direction:column;gap:0.3rem;">
+            @foreach (var output in Cell.Outputs)
+            {
+                @if (output.MimeType == "text/html")
+                {
+                    <div class="ui-output ui-output--html">@((MarkupString)output.Data)</div>
+                }
+                else if (output.MimeType == "image/png")
+                {
+                    <img src="@($"data:image/png;base64,{output.Data}")" style="border:1px solid var(--surface0);border-radius:0;" />
+                }
+                else
+                {
+                    <pre class="ui-output" style="@(output.Data.StartsWith("ERROR:") ? "color:var(--red);" : "")">@output.Data</pre>
+                }
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public Cell Cell { get; set; } = null!;
+    [Parameter, EditorRequired] public NotebookSession Session { get; set; } = null!;
+    [Parameter] public bool CanMoveUp { get; set; }
+    [Parameter] public bool CanMoveDown { get; set; }
+    [Parameter] public bool Trusted { get; set; } = true;
+    [Parameter] public EventCallback OnChanged { get; set; }
+    [Parameter] public EventCallback OnDelete { get; set; }
+    [Parameter] public EventCallback OnMoveUp { get; set; }
+    [Parameter] public EventCallback OnMoveDown { get; set; }
+
+    private bool _running;
+    private bool _previewing;
+    private bool _generating;
+    private string? _aiError;
+    private StandaloneCodeEditor? _editor;
+    private CancellationTokenSource? _saveDebounce;
+
+    private StandaloneEditorConstructionOptions EditorConstructionOptions(StandaloneCodeEditor editor) => new()
+    {
+        AutomaticLayout = true,
+        Language = Cell.Type switch { CellType.Code => "csharp", CellType.Markdown => "markdown", _ => "plaintext" },
+        Value = Cell.Source,
+        Theme = "vs-dark",
+        Minimap = new EditorMinimapOptions { Enabled = false },
+        ScrollBeyondLastLine = false,
+        FontFamily = "'JetBrains Mono', ui-monospace, Consolas, monospace",
+        FontSize = 14,
+    };
+
+    // Monaco fires this on every keystroke (unlike a plain textarea's onchange); debounce the autosave
+    // so typing doesn't hit disk on every character, while Cell.Source itself always stays current.
+    private async Task EditorContentChangedAsync(ModelContentChangedEvent e)
+    {
+        if (_editor is null)
+            return;
+
+        Cell.Source = await _editor.GetValue();
+
+        _saveDebounce?.Cancel();
+        var cts = new CancellationTokenSource();
+        _saveDebounce = cts;
+        try
+        {
+            await Task.Delay(800, cts.Token);
+            await OnChanged.InvokeAsync();
+        }
+        catch (TaskCanceledException)
+        {
+            // superseded by a newer keystroke — that debounce cycle will save instead
+        }
+    }
+
+    public async Task GenerateAsync()
+    {
+        if (!Trusted || string.IsNullOrWhiteSpace(Cell.Source))
+            return;
+
+        _generating = true;
+        _aiError = null;
+        StateHasChanged();
+
+        try
+        {
+            Cell.Source = await AiGenerator.GenerateAsync(Cell.Source);
+            Cell.Type = CellType.Code;
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _aiError = ex.Message;
+        }
+        finally
+        {
+            _generating = false;
+            StateHasChanged();
+        }
+    }
+
+    public async Task RunAsync()
+    {
+        if (!Trusted)
+            return;
+
+        _running = true;
+        Cell.Outputs.Clear();
+        StateHasChanged();
+
+        var result = await Session.RunCellAsync(
+            Cell.Id.ToString(),
+            Cell.Source,
+            (mime, data) => AppendOutput(mime, data),
+            error => AppendOutput("text/plain", $"ERROR: {error}"));
+
+        Cell.ExecutionCount = result.ExecutionCount;
+        _running = false;
+        StateHasChanged();
+        await OnChanged.InvokeAsync();
+    }
+
+    // A single Console.WriteLine(nonStringValue) arrives as two separate onOutput calls (the value, then
+    // the trailing newline) — appending each as its own CellOutput rendered a visible empty box under
+    // real output in the browser. Consecutive text/plain chunks merge into one growing entry instead,
+    // same as a real terminal's stdout stream; html/image outputs always start a fresh entry.
+    private void AppendOutput(string mimeType, string data)
+    {
+        var last = Cell.Outputs.Count > 0 ? Cell.Outputs[^1] : null;
+        var canMerge = mimeType == "text/plain"
+            && last is { MimeType: "text/plain" }
+            && !data.StartsWith("ERROR:")
+            && !last.Data.StartsWith("ERROR:");
+
+        if (canMerge)
+            Cell.Outputs[^1] = last! with { Data = last.Data + data };
+        else
+            Cell.Outputs.Add(new CellOutput(mimeType, data));
+
+        StateHasChanged();
+    }
+}

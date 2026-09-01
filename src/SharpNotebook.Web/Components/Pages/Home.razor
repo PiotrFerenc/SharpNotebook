@@ -1,0 +1,328 @@
+@page "/"
+@implements IAsyncDisposable
+@rendermode InteractiveServer
+@using System.Net
+@using System.Text
+@using SharpNotebook.Core
+@using SharpNotebook.Services
+@using BlazorMonaco
+@using BlazorMonaco.Languages
+@inject IJSRuntime JS
+
+<PageTitle>SharpNotebook</PageTitle>
+
+<div class="app-shell" style="display:flex;height:100vh;gap:0.75rem;padding:0.75rem;">
+    <FileBrowser CurrentOpenPath="@_filePath" OnOpen="OpenAsync" OnCurrentDeleted="CloseCurrentAsync" RootDirectory="@NotebooksRootDirectory" />
+
+    <div style="flex:1;overflow-y:auto;">
+        @if (_notebook is null)
+        {
+            <div class="ui-panel" style="padding:1.5rem;color:var(--subtext0);">
+                Wybierz lub utwórz notebook po lewej.
+            </div>
+        }
+        else
+        {
+            <div class="ui-panel" style="padding:0.6rem 0.75rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem;">
+                <span class="ui-title" style="font-size:1rem;">@System.IO.Path.GetFileNameWithoutExtension(_filePath)</span>
+                <span style="color:var(--subtext0);font-size:0.7rem;flex:1;">zapisano @_savedAt.ToString("HH:mm:ss")</span>
+                <button class="ui-btn" @onclick="InterruptAsync" disabled="@_restarting" data-testid="interrupt">
+                    <Icon Name="stop" Size="14" Color="var(--red)" /> @(_restarting ? "Restartowanie..." : "Przerwij")
+                </button>
+                <button class="ui-btn" @onclick="RestartAndRunAllAsync" disabled="@_restarting" data-testid="restart-run-all">
+                    <Icon Name="restart" Size="14" Color="var(--mauve)" /> @(_restarting ? "Restartowanie..." : "Restart i uruchom wszystko")
+                </button>
+                <button class="ui-btn" @onclick="ExportCodeAsync" data-testid="export-code">⇓ Kod (.cs)</button>
+                <button class="ui-btn" @onclick="ExportOutputAsync" data-testid="export-output">⇓ Wynik (.html)</button>
+            </div>
+
+            @if (!_notebook.Trusted)
+            {
+                <div data-testid="trust-banner" class="ui-banner" style="margin-bottom:0.75rem;">
+                    <Icon Name="warning" Size="20" Color="var(--peach)" />
+                    <span style="flex:1;">Ten notebook nie został utworzony w tej aplikacji — komórki mogą zawierać dowolny kod.</span>
+                    <button class="ui-btn" @onclick="TrustAsync" data-testid="trust-notebook">Ufaj temu notebookowi</button>
+                </div>
+            }
+
+            @for (var i = 0; i < _notebook.Cells.Count; i++)
+            {
+                var index = i;
+                <CellComponent
+                    @ref="_cellRefs[_notebook.Cells[index].Id]"
+                    Cell="_notebook.Cells[index]"
+                    Session="_session!"
+                    Trusted="_notebook.Trusted"
+                    CanMoveUp="index > 0"
+                    CanMoveDown="index < _notebook.Cells.Count - 1"
+                    OnChanged="SaveAsync"
+                    OnDelete="() => DeleteCellAsync(index)"
+                    OnMoveUp="() => MoveCellAsync(index, -1)"
+                    OnMoveDown="() => MoveCellAsync(index, 1)" />
+            }
+
+            <button class="ui-btn" @onclick="AddCellAsync" data-testid="add-cell" style="margin-top:0.5rem;">+ Komórka</button>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter] public string? NotebooksRootDirectory { get; set; }
+
+    private string? _filePath;
+    private Notebook? _notebook;
+    private NotebookSession? _session;
+    private DateTime _savedAt;
+    private bool _restarting;
+    private bool _completionProviderRegistered;
+    private readonly Dictionary<Guid, CellComponent> _cellRefs = new();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Registered once, globally, for the "csharp" language — every Monaco editor on the page shares
+        // it. The closure reads _session (a field) at call time, so it always sees whichever notebook is
+        // open, even after switching files; no per-cell registration or model-to-cell lookup needed.
+        if (firstRender && !_completionProviderRegistered)
+        {
+            _completionProviderRegistered = true;
+            try
+            {
+                // editor.main.js defines itself as an AMD module — window.monaco doesn't exist until
+                // something actually resolves it, which normally only happens when the first Monaco
+                // editor is constructed. This runs before any cell (and so any editor) exists, so it
+                // has to force the load itself first — skipping this throws "monaco is not defined"
+                // from BlazorMonaco's own JS, which previously crashed the whole circuit (see below).
+                await JS.InvokeVoidAsync("sharpNotebookEnsureMonacoLoaded");
+                await Global.RegisterCompletionItemProvider(JS, "csharp", ProvideCompletionsAsync);
+            }
+            catch (Exception ex)
+            {
+                // An unhandled exception in OnAfterRenderAsync takes down the entire Blazor Server
+                // circuit — the whole page, not just completions — confirmed the hard way against a
+                // real browser (Playwright) after the fix above wasn't yet in place. Completions are a
+                // nice-to-have; losing the whole session over a JS interop hiccup here is not
+                // acceptable, so this failure is logged and swallowed rather than left to propagate.
+                Console.Error.WriteLine($"Failed to register Monaco completion provider: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task<CompletionList> ProvideCompletionsAsync(string modelUri, Position position, CompletionContext context)
+    {
+        var model = await BlazorMonaco.Editor.Global.GetModel(JS, modelUri);
+        if (model is null)
+            return new CompletionList { Suggestions = [] };
+
+        var fullText = await model.GetValue(null, null);
+        var offset = ToOffset(fullText, position.LineNumber, position.Column);
+        return await BuildCompletionsAsync(fullText, offset, position.LineNumber, position.Column);
+    }
+
+    // Split out from ProvideCompletionsAsync so it's testable without Monaco: everything above this line
+    // depends on a real JS model bUnit can't provide; everything here is our own kernel-calling logic.
+    internal async Task<CompletionList> BuildCompletionsAsync(string fullText, int offset, int lineNumber, int column)
+    {
+        if (_session is null)
+            return new CompletionList { Suggestions = [] };
+
+        var items = await _session.GetCompletionsAsync("completion", fullText, offset);
+
+        var prefixLen = 0;
+        while (offset - prefixLen - 1 >= 0 && IsIdentifierChar(fullText[offset - prefixLen - 1]))
+            prefixLen++;
+
+        var range = new BlazorMonaco.Range
+        {
+            StartLineNumber = lineNumber,
+            EndLineNumber = lineNumber,
+            StartColumn = column - prefixLen,
+            EndColumn = column,
+        };
+
+        return new CompletionList
+        {
+            Suggestions = items.Select(item => new CompletionItem
+            {
+                LabelAsString = item,
+                Kind = CompletionItemKind.Method,
+                InsertText = item,
+                RangeAsObject = range,
+            }).ToList(),
+        };
+    }
+
+    private static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
+
+    private static int ToOffset(string text, int lineNumber, int column)
+    {
+        int line = 1, col = 1;
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (line == lineNumber && col == column)
+                return i;
+            if (text[i] == '\n') { line++; col = 1; }
+            else col++;
+        }
+        return text.Length;
+    }
+
+    private async Task OpenAsync(string path)
+    {
+        if (_session is not null)
+            await _session.DisposeAsync();
+
+        _filePath = path;
+        _notebook = NotebookFile.Load(path);
+        _cellRefs.Clear();
+        _session = new NotebookSession();
+        await _session.StartAsync();
+        _savedAt = DateTime.Now;
+        StateHasChanged();
+    }
+
+    private async Task CloseCurrentAsync()
+    {
+        if (_session is not null)
+            await _session.DisposeAsync();
+
+        _session = null;
+        _notebook = null;
+        _filePath = null;
+        _cellRefs.Clear();
+        StateHasChanged();
+    }
+
+    private Task SaveAsync()
+    {
+        if (_filePath is null || _notebook is null)
+            return Task.CompletedTask;
+
+        NotebookFile.Save(_filePath, _notebook);
+        _savedAt = DateTime.Now;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    private Task TrustAsync()
+    {
+        _notebook!.Trusted = true;
+        return SaveAsync();
+    }
+
+    private Task AddCellAsync()
+    {
+        _notebook!.Cells.Add(new Cell());
+        return SaveAsync();
+    }
+
+    private Task DeleteCellAsync(int index)
+    {
+        _cellRefs.Remove(_notebook!.Cells[index].Id);
+        _notebook.Cells.RemoveAt(index);
+        return SaveAsync();
+    }
+
+    private Task MoveCellAsync(int index, int delta)
+    {
+        var newIndex = index + delta;
+        (_notebook!.Cells[index], _notebook.Cells[newIndex]) = (_notebook.Cells[newIndex], _notebook.Cells[index]);
+        return SaveAsync();
+    }
+
+    /// <summary>Stops a stuck cell by killing the kernel process — no way to cancel Roslyn Scripting mid-execution. Loses in-memory state; cell outputs already shown are left as-is.</summary>
+    private async Task InterruptAsync()
+    {
+        if (_session is null)
+            return;
+
+        _restarting = true;
+        StateHasChanged();
+        await _session.RestartAsync();
+        _restarting = false;
+        StateHasChanged();
+    }
+
+    private async Task RestartAndRunAllAsync()
+    {
+        if (_session is null || _notebook is null)
+            return;
+
+        _restarting = true;
+        StateHasChanged();
+        await _session.RestartAsync();
+        _restarting = false;
+        StateHasChanged();
+
+        foreach (var cell in _notebook.Cells)
+        {
+            if (cell.Type == CellType.Code && _cellRefs.TryGetValue(cell.Id, out var component))
+                await component.RunAsync();
+        }
+    }
+
+    private async Task ExportCodeAsync()
+    {
+        if (_notebook is null || _filePath is null)
+            return;
+
+        var sb = new StringBuilder();
+        var n = 1;
+        foreach (var cell in _notebook.Cells.Where(c => c.Type == CellType.Code))
+        {
+            sb.AppendLine($"// --- Cell {n++} ---");
+            sb.AppendLine(cell.Source);
+            sb.AppendLine();
+        }
+
+        var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+        var fileName = Path.GetFileNameWithoutExtension(_filePath) + ".cs";
+        await JS.InvokeVoidAsync("sharpNotebookDownloadFile", fileName, "text/plain", Convert.ToBase64String(bytes));
+    }
+
+    private async Task ExportOutputAsync()
+    {
+        if (_notebook is null || _filePath is null)
+            return;
+
+        var bytes = Encoding.UTF8.GetBytes(BuildOutputHtml());
+        var fileName = Path.GetFileNameWithoutExtension(_filePath) + "-wynik.html";
+        await JS.InvokeVoidAsync("sharpNotebookDownloadFile", fileName, "text/html", Convert.ToBase64String(bytes));
+    }
+
+    private string BuildOutputHtml()
+    {
+        var title = Path.GetFileNameWithoutExtension(_filePath);
+        var sb = new StringBuilder();
+        sb.Append("<!doctype html><html><head><meta charset=\"utf-8\"><title>Wynik - ").Append(WebUtility.HtmlEncode(title)).Append("</title>");
+        sb.Append("<style>body{background:#1e1e2e;color:#cdd6f4;font-family:monospace;padding:2em;} pre{background:#11111b;color:#a6e3a1;padding:0.8em;white-space:pre-wrap;border:1px solid #313244;} h3{color:#cba6f7;}</style></head><body>");
+        sb.Append("<h1>Wynik — ").Append(WebUtility.HtmlEncode(title)).Append("</h1>");
+
+        var n = 0;
+        foreach (var cell in _notebook!.Cells)
+        {
+            n++;
+            if (cell.Outputs.Count == 0)
+                continue;
+
+            sb.Append("<h3>Komórka ").Append(n).Append("</h3>");
+            foreach (var output in cell.Outputs)
+            {
+                if (output.MimeType == "image/png")
+                    sb.Append($"<img src=\"data:image/png;base64,{output.Data}\" style=\"max-width:600px;\" />");
+                else if (output.MimeType == "text/html")
+                    sb.Append(output.Data);
+                else
+                    sb.Append("<pre>").Append(WebUtility.HtmlEncode(output.Data)).Append("</pre>");
+            }
+        }
+
+        sb.Append("</body></html>");
+        return sb.ToString();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_session is not null)
+            await _session.DisposeAsync();
+    }
+}
